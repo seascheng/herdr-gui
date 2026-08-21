@@ -1,0 +1,469 @@
+import Cocoa
+import GhosttyKit
+
+// MARK: - app delegate (window + session management)
+
+private var keepAliveDelegate: AppDelegate?
+
+@main
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var window: NSWindow?
+    var ghostty: Ghostty.App!
+
+    /// The libghostty app handle for surface construction (pages are
+    /// built only after applicationDidFinishLaunching initialized it).
+    static func ghosttyApp() -> ghostty_app_t {
+        guard let delegate = NSApplication.shared.delegate as? AppDelegate,
+              let app = delegate.ghostty?.app
+        else { fatalError("libghostty app not initialized") }
+        return app
+    }
+
+    // One open connection per entry; the session bar mirrors this array.
+    private enum Session {
+        case herdr(HerdrPageController)
+        case terminal(TerminalPageController)
+        case connecting(ConnectingView)
+
+        var spec: SessionSpec {
+            switch self {
+            case .herdr(let page): return page.spec
+            case .terminal(let page): return page.spec
+            case .connecting(let view): return view.spec
+            }
+        }
+
+        var view: NSView {
+            switch self {
+            case .herdr(let page): return page.view
+            case .terminal(let page): return page.view
+            case .connecting(let view): return view
+            }
+        }
+
+        var keyView: NSView? {
+            switch self {
+            case .herdr(let page): return page.keyView
+            case .terminal(let page): return page.keyView
+            case .connecting: return nil
+            }
+        }
+
+        var surfaceView: Ghostty.SurfaceView? {
+            switch self {
+            case .herdr(let page): return page.surfaceView
+            case .terminal(let page): return page.keyView as? Ghostty.SurfaceView
+            case .connecting: return nil
+            }
+        }
+
+        func focusTerminal() {
+            switch self {
+            case .herdr(let page): page.focusTerminal()
+            case .terminal(let page): page.focusTerminal()
+            case .connecting: break
+            }
+        }
+
+        func shutdown() {
+            switch self {
+            case .herdr(let page): page.shutdown()
+            case .terminal(let page): page.shutdown()
+            case .connecting: break
+            }
+        }
+    }
+
+    private var sessions: [Session] = []
+    private var activeIndex = -1
+    private var sessionBar: SessionBarView?
+    private var pageContainer: NSView?
+    private var focusMonitor: Any?
+    private var tunnels: [String: SSHTunnel] = [:]  // spec.id → tunnel
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        keepAliveDelegate = self
+        NSApp.setActivationPolicy(.regular)
+        guard ghostty_init(0, nil) == 0 else {
+            let alert = NSAlert(); alert.messageText = "ghostty_init failed"; alert.runModal()
+            NSApp.terminate(nil); return
+        }
+
+        let explicitConfig = NSHomeDirectory()
+            + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
+        let configPath = FileManager.default.fileExists(atPath: explicitConfig) ? explicitConfig : nil
+        let app = Ghostty.App(configPath: configPath)
+        guard app.readiness == .ready else {
+            let alert = NSAlert()
+            alert.messageText = "Failed to initialize libghostty"
+            alert.runModal(); NSApp.terminate(nil); return
+        }
+        ghostty = app
+        app.delegate = self
+        // Chrome follows the terminal's resolved Ghostty config — the
+        // same one the mirror surface renders with.
+        Chrome.theme = ChromeTheme.from(app.config)
+
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 832))
+        let window = NSWindow(
+            contentRect: content.bounds,
+            // fullSizeContentView must be present at init: inserting it
+            // later leaves the native titlebar band in place (black
+            // strip). The session bar carries the traffic lights zone.
+            styleMask: [.titled, .closable, .miniaturizable, .resizable,
+                        .fullSizeContentView],
+            backing: .buffered, defer: false
+        )
+        window.title = "Herdr Mirror"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.appearance = NSAppearance(named: Chrome.theme.isDark ? .darkAqua : .aqua)
+        window.contentView = content
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+
+        // Session bar spans the titlebar zone; pages live below it.
+        let bar = SessionBarView(frame: .zero)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(bar)
+        self.sessionBar = bar
+
+        let pages = NSView(frame: .zero)
+        pages.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(pages)
+        self.pageContainer = pages
+
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: content.topAnchor),
+            bar.heightAnchor.constraint(equalToConstant: 30),
+            pages.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            pages.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            pages.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            pages.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+
+        bar.onSessionSelected = { [weak self] index in
+            self?.activate(index)
+        }
+        bar.onSessionClosed = { [weak self] index in
+            self?.closeSession(at: index)
+        }
+        bar.serversMenuProvider = { [weak self] in
+            self?.buildServersMenu() ?? NSMenu()
+        }
+
+        buildMainMenu()
+
+        // The default first session: local herdr, as before.
+        openSession(SessionSpec(target: .local, wantsHerdr: true))
+
+        focusMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window,
+                  let container = self.pageContainer,
+                  let active = self.activeSession,
+                  container.frame.contains(event.locationInWindow),
+                  let keyView = active.keyView
+            else { return event }
+            window.makeFirstResponder(keyView)
+            return event
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    // MARK: sessions
+
+    private var activeSession: Session? {
+        guard sessions.indices.contains(activeIndex) else { return nil }
+        return sessions[activeIndex]
+    }
+
+    /// Opens (or activates) a session. ssh+herdr dials the tunnel first
+    /// and shows a connecting page until the endpoints are live.
+    private func openSession(_ spec: SessionSpec) {
+        if let index = sessions.firstIndex(where: { $0.spec.id == spec.id }) {
+            activate(index)
+            return
+        }
+
+        switch spec.target {
+        case .local:
+            append(.herdr(HerdrPageController(
+                spec: spec,
+                apiSocketPath: HerdrAPI.defaultSocketPath,
+                clientSocketPath: NSString(
+                    string: "~/.config/herdr/herdr-client.sock").expandingTildeInPath)))
+        case .ssh(let alias) where spec.wantsHerdr:
+            let connecting = ConnectingView(spec: spec)
+            append(.connecting(connecting))
+            let tunnel = SSHTunnel(alias: alias)
+            tunnels[spec.id] = tunnel
+            tunnel.start { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let endpoints):
+                    guard let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id })
+                    else { self.tunnels[spec.id]?.shutdown(); self.tunnels[spec.id] = nil; return }
+                    let page = HerdrPageController(
+                        spec: spec,
+                        apiSocketPath: endpoints.apiSocket,
+                        clientSocketPath: endpoints.clientSocket)
+                    self.replaceSession(at: index, with: .herdr(page))
+                case .failure(let error):
+                    HerdrLog.error("tunnel \(alias): \(error.localizedDescription)")
+                    if let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id }) {
+                        self.closeSession(at: index)
+                    }
+                    self.tunnels[spec.id]?.shutdown()
+                    self.tunnels[spec.id] = nil
+                    let alert = NSAlert()
+                    alert.messageText = "Could not connect to \(alias)"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        case .ssh:
+            append(.terminal(TerminalPageController(spec: spec)))
+        }
+    }
+
+    private func append(_ session: Session) {
+        sessions.append(session)
+        activate(sessions.count - 1)
+    }
+
+    private func replaceSession(at index: Int, with session: Session) {
+        guard sessions.indices.contains(index) else { return }
+        sessions[index] = session
+        if index == activeIndex { activate(index) } else { renderSessionBar() }
+    }
+
+    private func activate(_ index: Int) {
+        guard sessions.indices.contains(index) else { return }
+        activeIndex = index
+        if let container = pageContainer {
+            container.subviews.forEach { $0.removeFromSuperview() }
+            let view = sessions[index].view
+            container.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                view.topAnchor.constraint(equalTo: container.topAnchor),
+                view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+        }
+        renderSessionBar()
+        // Terminal takes keyboard focus as the page appears.
+        DispatchQueue.main.async { [weak self] in
+            self?.activeSession?.focusTerminal()
+        }
+    }
+
+    private func closeSession(at index: Int) {
+        guard sessions.indices.contains(index) else { return }
+        // Local is pinned — the shell always keeps its primary session.
+        guard sessions[index].spec.target != .local else { return }
+        let specId = sessions[index].spec.id
+        sessions[index].shutdown()
+        sessions.remove(at: index)
+        tunnels[specId]?.shutdown()
+        tunnels[specId] = nil
+
+        if index == activeIndex {
+            activate(min(index, sessions.count - 1))
+        } else if index < activeIndex {
+            activeIndex -= 1
+            renderSessionBar()
+        }
+    }
+
+    private func renderSessionBar() {
+        sessionBar?.render(
+            sessions: sessions.map { $0.spec },
+            activeId: activeSession?.spec.id ?? "")
+    }
+
+    // The toolbar button pops the menu itself (anchored to the button,
+    // add-workspace reference style); this builds the shared menu.
+
+    /// Local + every ssh-config host, native add-workspace style: flat
+    /// rows with theme-tinted icons; ⌥ swaps a host to terminal-only.
+    /// Shared by the toolbar button popup and the menu-bar Servers item.
+    private func buildServersMenu() -> NSMenu {
+        let menu = NSMenu()
+        let local = NSMenuItem(
+            title: "Local herdr", action: #selector(menuOpenServer(_:)), keyEquivalent: "")
+        local.target = self
+        local.representedObject = ["id": "local"]
+        local.image = menuItemIcon("desktopcomputer")
+        menu.addItem(local)
+        menu.addItem(.separator())
+
+        for alias in SSHConfig.hostAliases() {
+            let herdr = NSMenuItem(
+                title: alias, action: #selector(menuOpenServer(_:)), keyEquivalent: "")
+            herdr.target = self
+            herdr.representedObject = ["alias": alias, "herdr": true]
+            herdr.image = menuItemIcon("server.rack")
+            menu.addItem(herdr)
+
+            let term = NSMenuItem(
+                title: "\(alias) — terminal", action: #selector(menuOpenServer(_:)),
+                keyEquivalent: "")
+            term.target = self
+            term.representedObject = ["alias": alias, "herdr": false]
+            term.isAlternate = true
+            term.keyEquivalentModifierMask = [.option]
+            term.image = menuItemIcon("terminal")
+            menu.addItem(term)
+        }
+
+        if menu.items.count > 2 {
+            menu.addItem(.separator())
+            let hint = NSMenuItem(title: "Hold ⌥ for terminal-only ssh", action: nil,
+                                  keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
+        return menu
+    }
+
+    @objc private func menuOpenServer(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: Any] else { return }
+        if info["id"] as? String == "local" {
+            openSession(SessionSpec(target: .local, wantsHerdr: true))
+            return
+        }
+        guard let alias = info["alias"] as? String,
+              let wantsHerdr = info["herdr"] as? Bool
+        else { return }
+        openSession(SessionSpec(target: .ssh(alias: alias), wantsHerdr: wantsHerdr))
+    }
+
+    // MARK: menu / key equivalents
+
+    private func buildMainMenu() {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem(title: "Herdr Mirror", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Herdr Mirror",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let serversItem = NSMenuItem(title: "Servers", action: nil, keyEquivalent: "")
+        serversItem.submenu = buildServersMenu()
+        mainMenu.addItem(serversItem)
+
+        let sessionItem = NSMenuItem(title: "Session", action: nil, keyEquivalent: "")
+        let sessionMenu = NSMenu()
+        let newLocal = sessionMenu.addItem(withTitle: "New Local herdr Session",
+                                           action: #selector(menuNewLocalSession), keyEquivalent: "n")
+        newLocal.target = self
+        let close = sessionMenu.addItem(withTitle: "Close Session",
+                                        action: #selector(menuCloseSession), keyEquivalent: "W")
+        close.keyEquivalentModifierMask = [.command, .shift]
+        // Explicit target so validateMenuItem runs on the delegate.
+        close.target = self
+        sessionItem.submenu = sessionMenu
+        mainMenu.addItem(sessionItem)
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func menuNewLocalSession() {
+        openSession(SessionSpec(target: .local, wantsHerdr: true))
+    }
+
+    @objc private func menuCloseSession() {
+        // Local is pinned; the item is validated disabled when active.
+        guard let session = activeSession,
+              session.spec.target != .local,
+              let index = sessions.firstIndex(where: { $0.spec.id == session.spec.id })
+        else { return }
+        closeSession(at: index)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(menuCloseSession) {
+            return activeSession?.spec.target != .local
+        }
+        return true
+    }
+    /// Cmd-T / Cmd-W act on the active herdr session.
+    func performGhosttyBindingMenuKeyEquivalent(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.modifierFlags.contains(.command) else { return false }
+        switch event.charactersIgnoringModifiers ?? "" {
+        case "t":
+            if case .herdr(let page)? = activeSession { page.menuNewTab() }
+            return true
+        case "w":
+            if case .herdr(let page)? = activeSession { page.menuCloseTab() }
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {}
+
+// MARK: - connecting placeholder page
+
+/// Shown while an ssh herdr tunnel dials: a quiet label so the session
+/// tab exists (and can be closed) before the endpoints come up.
+final class ConnectingView: NSView {
+    let spec: SessionSpec
+    private let label = NSTextField(labelWithString: "")
+
+    init(spec: SessionSpec) {
+        self.spec = spec
+        super.init(frame: .zero)
+        wantsLayer = true
+        label.stringValue = "Connecting to \(spec.label)…"
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = Chrome.theme.secondaryText
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        Chrome.theme.background.setFill()
+        bounds.fill()
+    }
+}
+
+extension AppDelegate {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        keepAliveDelegate = delegate
+        app.run()
+    }
+}
+
+extension AppDelegate: GhosttyAppDelegate {
+    func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
+        guard let delegate = NSApplication.shared.delegate as? AppDelegate else { return nil }
+        return delegate.sessions.compactMap { $0.surfaceView }
+            .first { $0.id == uuid }
+    }
+}

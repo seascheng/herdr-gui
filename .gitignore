@@ -1,0 +1,5 @@
+# Local build output and vendored dylibs.
+swift-app/herdr-mirror
+swift-app/CGhostty/lib/
+.DS_Store
+*.log
