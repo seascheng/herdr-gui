@@ -13,8 +13,8 @@ import Cocoa
 /// are purely visual.
 
 private enum ChromeMetrics {
-    static let workspaceRowHeight: CGFloat = 46 // two-line card
-    static let agentRowHeight: CGFloat = 40     // two-line card (status + context)
+    static let twoLineRowHeight: CGFloat = 46   // workspace / agent card
+    static let singleLineRowHeight: CGFloat = 40 // row without a meta line
 }
 
 /// 0.5pt separator drawn in draw(_:) — assigning layer?.background in
@@ -122,6 +122,17 @@ func menuItemIcon(_ symbol: String, pointSize: CGFloat = 10) -> NSImage? {
         .withSymbolConfiguration(
             .init(pointSize: pointSize, weight: .regular)
                 .applying(.init(paletteColors: [Chrome.theme.iconTint])))
+}
+
+/// Appends to the HERDR_DUMP_VIEWS log (layout self-check harness).
+func diagAppend(_ text: String) {
+    let url = URL(fileURLWithPath: "/tmp/herdr-views.log")
+    let data = text.data(using: .utf8) ?? Data()
+    if let h = try? FileHandle(forWritingTo: url) {
+        h.seekToEndOfFile(); h.write(data); try? h.close()
+    } else {
+        try? data.write(to: url)
+    }
 }
 
 /// Section header (uppercase, letter-spaced) with an inline trailing
@@ -239,7 +250,7 @@ final class SidebarRowView: NSView {
         super.init(frame: .zero)
 
         heightConstraint = heightAnchor.constraint(
-            equalToConstant: ChromeMetrics.workspaceRowHeight)
+            equalToConstant: ChromeMetrics.twoLineRowHeight)
         heightConstraint?.isActive = true
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -289,7 +300,7 @@ final class SidebarRowView: NSView {
         self.menuProvider = menuProvider
         let twoLine = !(meta ?? "").isEmpty
         heightConstraint?.constant = twoLine
-            ? ChromeMetrics.workspaceRowHeight : ChromeMetrics.agentRowHeight
+            ? ChromeMetrics.twoLineRowHeight : ChromeMetrics.singleLineRowHeight
         metaField.stringValue = meta ?? ""
         metaField.isHidden = !twoLine
         let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -464,8 +475,7 @@ final class SidebarView: NSView {
     private let widthHandle = WidthHandle()
     private let launcher = IconButton(frame: .zero)
     private lazy var collapseToggle: IconButton = IconButton.make(
-        isCollapsed ? "sidebar.leading" : "sidebar.leading",
-        pointSize: 13) { [weak self] in
+        "sidebar.leading", pointSize: 13) { [weak self] in
             self?.onToggleCollapse?()
         }
     private lazy var spacesHeader: SectionHeaderView = SectionHeaderView("Spaces") { [weak self] in
@@ -583,13 +593,7 @@ final class SidebarView: NSView {
         launcher.symbol = "line.3.horizontal"
         launcher.onClick = { [weak self] in
             if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] == "1" {
-                let line = "LAUNCHER CLICKED frame=\(self?.launcher.frame ?? .zero)\n"
-                let url = URL(fileURLWithPath: "/tmp/herdr-views.log")
-                if let h = try? FileHandle(forWritingTo: url) {
-                    h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
-                } else {
-                    try? line.data(using: .utf8)?.write(to: url)
-                }
+                diagAppend("LAUNCHER CLICKED frame=\(self?.launcher.frame ?? .zero)\n")
             }
             self?.popLauncherMenu()
         }
@@ -796,17 +800,13 @@ final class SidebarView: NSView {
         }
         subviews.forEach { dump($0, depth: 1) }
         out += "\n"
-        let url = URL(fileURLWithPath: "/tmp/herdr-views.log")
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(out.data(using: .utf8)!); try? h.close()
-        } else {
-            try? out.data(using: .utf8)?.write(to: url)
-        }
+        diagAppend(out)
     }
 
     @objc private func closeWsAction(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { onCloseWorkspace?(id) }
     }
+
     @objc private func agentFocusAction(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { onAgentSelected?(id) }
     }

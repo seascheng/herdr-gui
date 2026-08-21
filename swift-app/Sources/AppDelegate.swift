@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var surfaceView: Ghostty.SurfaceView? {
             switch self {
             case .herdr(let page): return page.surfaceView
-            case .terminal(let page): return page.keyView as? Ghostty.SurfaceView
+            case .terminal(let page): return page.surfaceView
             case .connecting: return nil
             }
         }
@@ -202,8 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             append(.herdr(HerdrPageController(
                 spec: spec,
                 apiSocketPath: HerdrAPI.defaultSocketPath,
-                clientSocketPath: NSString(
-                    string: "~/.config/herdr/herdr-client.sock").expandingTildeInPath)))
+                clientSocketPath: HerdrAPI.defaultClientSocketPath)))
         case .ssh(let alias) where spec.wantsHerdr:
             let connecting = ConnectingView(spec: spec)
             append(.connecting(connecting))
@@ -214,7 +213,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch result {
                 case .success(let endpoints):
                     guard let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id })
-                    else { self.tunnels[spec.id]?.shutdown(); self.tunnels[spec.id] = nil; return }
+                    else {
+                        self.teardownTunnel(spec.id)
+                        return
+                    }
                     let page = HerdrPageController(
                         spec: spec,
                         apiSocketPath: endpoints.apiSocket,
@@ -222,11 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.replaceSession(at: index, with: .herdr(page))
                 case .failure(let error):
                     HerdrLog.error("tunnel \(alias): \(error.localizedDescription)")
+                    // closeSession tears the tunnel when the session is
+                    // still open; otherwise do it here.
                     if let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id }) {
                         self.closeSession(at: index)
+                    } else {
+                        self.teardownTunnel(spec.id)
                     }
-                    self.tunnels[spec.id]?.shutdown()
-                    self.tunnels[spec.id] = nil
                     let alert = NSAlert()
                     alert.messageText = "Could not connect to \(alias)"
                     alert.informativeText = error.localizedDescription
@@ -277,8 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let specId = sessions[index].spec.id
         sessions[index].shutdown()
         sessions.remove(at: index)
-        tunnels[specId]?.shutdown()
-        tunnels[specId] = nil
+        teardownTunnel(specId)
 
         if index == activeIndex {
             activate(min(index, sessions.count - 1))
@@ -286,6 +289,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activeIndex -= 1
             renderSessionBar()
         }
+    }
+
+    private func teardownTunnel(_ specId: String) {
+        tunnels[specId]?.shutdown()
+        tunnels[specId] = nil
     }
 
     private func renderSessionBar() {

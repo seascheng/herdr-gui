@@ -10,7 +10,7 @@ final class TerminalPageController {
     let view = NSView(frame: .zero)
     let spec: SessionSpec
 
-    private var surfaceView: Ghostty.SurfaceView?
+    private(set) var surfaceView: Ghostty.SurfaceView?
     private var scrollView: SurfaceScrollView?
 
     init(spec: SessionSpec) {

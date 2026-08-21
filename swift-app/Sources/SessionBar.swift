@@ -77,19 +77,15 @@ final class SessionBarView: NSView {
             let segment = TabSegmentView()
             segment.configure(text: spec.label, selected: spec.id == activeId)
             segment.onClick = { [weak self] in self?.onSessionSelected?(index) }
-            // The local session is pinned: no close affordance.
-            if case .local = spec.target {
-                segment.onClose = nil
-            } else {
+            // Pinned local session: no close affordance. Labels come
+            // from ssh aliases (no rename) — both default to nil.
+            if case .ssh = spec.target {
                 segment.onClose = { [weak self] in self?.onSessionClosed?(index) }
             }
-            // Session names come from ssh config aliases — renaming a
-            // session label would desync from the menu, so disable it.
-            segment.onRename = nil
             stack.addArrangedSubview(segment)
             // Readable minimum for short labels ("Local"); longer labels
             // keep their intrinsic width.
             segment.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
         }
-}
+    }
 }

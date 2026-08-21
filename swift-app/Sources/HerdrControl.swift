@@ -16,6 +16,8 @@ enum HerdrLog {
 final class HerdrAPI {
     static let defaultSocketPath = NSString(
         string: "~/.config/herdr/herdr.sock").expandingTildeInPath
+    static let defaultClientSocketPath = NSString(
+        string: "~/.config/herdr/herdr-client.sock").expandingTildeInPath
 
     let socketPath: String
 
@@ -106,7 +108,6 @@ enum HerdrModel {
         // herdr's own sidebar workspaces/agents split — the launcher row
         // math for opening the TUI global menu depends on it.
         let split = (snapshot["sidebar_section_split"] as? Double) ?? 0.5
-
 
         let label = ws["label"] as? String ?? focusedWs
         let focusedTabId = snapshot["focused_tab_id"] as? String
