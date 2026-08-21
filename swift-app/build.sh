@@ -4,6 +4,14 @@
 set -e
 cd "$(dirname "$0")"
 
+# Icon table is generated from Assets/AgentIcons/*.png (best-effort:
+# falls back to the committed AgentIcons.swift when python3 is absent).
+if command -v python3 >/dev/null 2>&1 && \
+   ( [ ! -f Sources/AgentIcons.swift ] || \
+     [ -n "$(find Assets/AgentIcons -name '*.png' -newer Sources/AgentIcons.swift -print -quit 2>/dev/null)" ] ); then
+    python3 tools/gen_agent_icons.py
+fi
+
 MAPFILE=CGhostty/include/module.modulemap
 
 VENDOR_SOURCES=(
