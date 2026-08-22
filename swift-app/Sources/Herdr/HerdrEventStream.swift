@@ -4,10 +4,11 @@ import Darwin
 /// Long-lived `events.subscribe` stream on the herdr API socket (herdr.sock).
 ///
 /// One dedicated connection (the API is one-request-per-connection for
-/// everything else): subscribe once, then the server pushes NDJSON event
-/// envelopes (`{"event":"tab.focused","data":{...}}`). This replaces
-/// snapshot polling as the primary change signal — a tab click round-trips
-/// in ~10ms instead of waiting for the next 2s poll.
+/// everything else): subscribe once with an explicit `subscriptions`
+/// list, then the server pushes NDJSON envelopes
+/// (`{"event":"pane.updated","data":{...}}`). Structure pushes drive
+/// reconcile within ~30ms; the 2s snapshot poll remains as the
+/// self-healing fallback.
 final class HerdrEventStream {
     private let socketPath: String
     private let queue = DispatchQueue(label: "herdr.events")
@@ -18,17 +19,27 @@ final class HerdrEventStream {
 
     /// Event name → called on the main queue.
     var onEvent: ((String) -> Void)?
-
+    /// Chrome-relevant subscriptions: every structure event herdr offers.
+    /// pane.updated carries agent_status — the per-pane filtered
+    /// pane.agent_status_changed / output_matched / scroll_changed are
+    /// excluded (they REQUIRE pane_id; a pane_id-less entry makes the
+    /// server reject the whole subscribe, which would quietly demote
+    /// the stream to the 2s poll).
     private static let subscribeRequest: [UInt8] = {
+        let events = [
+            "workspace.created", "workspace.updated", "workspace.metadata_updated",
+            "workspace.renamed", "workspace.moved", "workspace.reordered",
+            "workspace.closed", "workspace.focused",
+            "tab.created", "tab.closed", "tab.focused", "tab.renamed", "tab.moved",
+            "pane.created", "pane.closed", "pane.updated", "pane.focused",
+            "pane.moved", "pane.exited",
+            "pane.agent_detected",
+            "layout.updated",
+        ]
         let request: [String: Any] = [
             "id": "hertty:events",
             "method": "events.subscribe",
-            "params": [
-                "subscriptions": [
-                    ["type": "tab.focused"],
-                    ["type": "layout.updated"],
-                ]
-            ],
+            "params": ["subscriptions": events.map { ["type": $0] }],
         ]
         guard var data = try? JSONSerialization.data(withJSONObject: request) else { return [] }
         data.append(0x0A)
