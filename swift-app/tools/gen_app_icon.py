@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerates Sources/AppIcon.swift from Assets/AppIcon/.
+"""Regenerates Sources/Chrome/AppIcon.swift from Assets/AppIcon/.
 
 The build produces a single swiftc binary with no resource bundle, so
 the app icon and the menu-bar template are embedded as base64, mirroring
@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "Assets" / "AppIcon"
-TARGET = ROOT / "Sources" / "AppIcon.swift"
+TARGET = ROOT / "Sources" / "Chrome" / "AppIcon.swift"
 
 MASTER = ASSETS / "app-icon.png"
 ICON_SIZES = (1024, 512, 256, 128, 64, 32, 16)

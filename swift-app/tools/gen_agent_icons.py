@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerates Sources/AgentIcons.swift from Assets/AgentIcons/*.png.
+"""Regenerates Sources/Chrome/AgentIcons.swift from Assets/AgentIcons/*.png.
 
 Each brand is a set of pixel-exact PNGs named <kind>@<scale>x.png
 (scale 2/3/4 = 36/54/72px rasterizations of the 18pt sidebar icon
@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "Assets" / "AgentIcons"
-TARGET = ROOT / "Sources" / "AgentIcons.swift"
+TARGET = ROOT / "Sources" / "Chrome" / "AgentIcons.swift"
 
 
 def main() -> None:

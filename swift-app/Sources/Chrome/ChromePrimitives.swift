@@ -153,20 +153,3 @@ func menuItemIcon(_ symbol: String, pointSize: CGFloat = 10) -> NSImage? {
                 .applying(.init(paletteColors: [Chrome.theme.iconTint])))
 }
 
-/// Env-gated diagnostics sink: appends to a /tmp log (created on first
-/// write). The HERDR_DUMP_VIEWS / HERDR_DUMP_FRAMES harnesses render
-/// their reports through these — one append implementation, two files.
-enum DiagLog {
-    static func views(_ text: String) { append(text, to: "/tmp/herdr-views.log") }
-    static func frames(_ text: String) { append(text, to: "/tmp/herdr-frames.log") }
-
-    private static func append(_ text: String, to path: String) {
-        let url = URL(fileURLWithPath: path)
-        let data = text.data(using: .utf8) ?? Data()
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(data); try? h.close()
-        } else {
-            try? data.write(to: url)
-        }
-    }
-}
