@@ -60,7 +60,13 @@ final class TerminalInputRouter {
 
         let channel = scrollChannel
         let pane = host.focusedPaneRect
-        if channel.isUsable, pane.contains(cell) {
+        // Mouse-report apps (alt-screen TUIs: herdr reports MouseCapture
+        // on) must receive wheel through the app input path — the TUI's
+        // own routing, identical to a native herdr client — because the
+        // AttachScroll channel drives herdr's server-side scrollback
+        // viewport, which renders alt-screen content corrupted. Plain
+        // shells keep the channel's exact-line scrollback.
+        if !host.mouseCaptureActive, channel.isUsable, pane.contains(cell) {
             channel.scroll(
                 up: delta > 0,
                 lines: lines,

@@ -34,6 +34,9 @@ final class TerminalSurfaceHost: NSView {
 
     private var isRendererPresented = false
     private var inputRouter: TerminalInputRouter?
+    /// herdr's MouseCapture notice: true while the focused pane app wants
+    /// mouse reporting. Gates wheel routing (see TerminalInputRouter).
+    private(set) var mouseCaptureActive = true
     private static let clearLocalTerminal = Array("\u{1B}[3J\u{1B}[2J\u{1B}[H".utf8)
 
     /// herdr's own chrome in app-frame cells: sidebar columns and top tab-bar
@@ -185,8 +188,19 @@ final class TerminalSurfaceHost: NSView {
         // Herdr sends a full snapshot for the current grid.
         session.onMessage = { [weak self] message in
             DispatchQueue.main.async {
-                guard let self,
-                      case let .terminalFrame(sequence, width, height, full, bytes) = message,
+                guard let self else { return }
+                if case let .mouseCapture(active) = message {
+                    // True while the focused pane app requests mouse
+                    // reporting (alt-screen TUIs like omp): wheel must
+                    // ride the app input path so the app scrolls itself.
+                    // The AttachScroll channel's server-side scrollback
+                    // viewport renders alt-screen content corrupted
+                    // (verified live: garbled wide-char rows + a 39-frame
+                    // burst after wheel-up on omp).
+                    self.mouseCaptureActive = active
+                    return
+                }
+                guard case let .terminalFrame(sequence, width, height, full, bytes) = message,
                       let surface = self.surfaceView?.surface
                 else { return }
                 func dump(_ note: String) {
