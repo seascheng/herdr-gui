@@ -128,6 +128,31 @@ enum HerdrClientMessage {
         }
     }
 
+    /// Structured key presses (InputEvents → Key). modifiers use
+    /// crossterm bits: 0x01 shift, 0x02 ctrl, 0x04 alt. Chords that
+    /// depend on real modifiers (prefix+shift+N, prefix+alt+N) must go
+    /// through here — raw Input bytes cannot carry a shift modifier
+    /// past the terminal's shifted-character mapping.
+    static func inputEventsKeys(_ keys: [(char: Character, modifiers: UInt8)]) -> [UInt8] {
+        BincodeWriter.withLock {
+            BincodeWriter.resetLocked()
+            BincodeWriter.writeVariant(7)              // ClientMessage::InputEvents
+            BincodeWriter.writeVarint(UInt32(keys.count))
+            for key in keys {
+                BincodeWriter.writeVariant(0)          // ClientInputEvent::Key
+                BincodeWriter.writeVariant(15)         // ClientKeyCode::Char(char)
+                let scalar = key.char.unicodeScalars.first ?? " "
+                BincodeWriter.writeVarint(UInt32(scalar.value))
+                BincodeWriter.writeU8(key.modifiers)
+                BincodeWriter.writeVariant(0)          // ClientKeyKind::Press
+                BincodeWriter.writeVarint(UInt16(1))   // repeat_count
+                BincodeWriter.writeVariant(0)          // generated_text: None
+                BincodeWriter.writeVariant(0)          // source: Synthesized
+            }
+            return BincodeFrame.frame(BincodeWriter.bytesLocked())
+        }
+    }
+
 }
 
 /// Server→Client (v19). 0=Welcome 1=Frame 2=Terminal 3=Graphics 4=ServerShutdown

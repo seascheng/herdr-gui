@@ -53,9 +53,10 @@ final class HerdrAPI {
         return result
     }
 
-    /// One-shot control request off the main thread. Only navigation
-    /// fallback uses this path, so a clipped or ambiguous mirror target
-    /// never blocks native chrome or the attach stream.
+    /// One-shot control request off the main thread. The herdr API is
+    /// one-request-per-connection (verified), so every call dials its
+    /// own socket — cheap locally, and off-main so a busy herdr can
+    /// never freeze native chrome.
     func callAsync(_ method: String, _ params: [String: Any],
                    completion: @escaping ([String: Any]?) -> Void) {
         asyncQueue.async { [self] in
@@ -76,28 +77,39 @@ final class HerdrAPI {
     }
 
     func snapshot() -> [String: Any]? {
-        call("session.snapshot", [:])?["snapshot"] as? [String: Any]
+        call("session.snapshot", [:], timeout: 5)?["snapshot"] as? [String: Any]
     }
 
-    /// Creates a tab in the focused workspace and returns its id.
-    /// focus: true has herdr switch to the new tab server-side — with
-    /// focus: false the old tab stays focused.
-    func createTab(focus: Bool) -> String? {
-        guard let tab = call("tab.create", ["focus": focus])?["tab"] as? [String: Any]
-        else { return nil }
-        return tab["tab_id"] as? String
+
+    /// Fire-and-forget control mutation: chrome actions (close/rename/
+    /// create) must never block on the server. The completion (main
+    /// queue) is the earliest point a re-read makes sense.
+    func perform(_ method: String, _ params: [String: Any],
+                 completion: (() -> Void)? = nil) {
+        asyncQueue.async { [self] in
+            _ = call(method, params, timeout: 5)
+            if let completion {
+                DispatchQueue.main.async { completion() }
+            }
+        }
     }
 
-    func closeTab(_ tabId: String) {
-        _ = call("tab.close", ["tab_id": tabId])
+    func closeTabAsync(_ tabId: String, completion: (() -> Void)? = nil) {
+        perform("tab.close", ["tab_id": tabId], completion: completion)
     }
 
-    func renameTab(_ tabId: String, to name: String) {
-        _ = call("tab.rename", ["tab_id": tabId, "name": name])
+    func closeWorkspaceAsync(_ workspaceId: String,
+                             completion: (() -> Void)? = nil) {
+        perform("workspace.close", ["workspace_id": workspaceId],
+                completion: completion)
     }
 
-    func closeWorkspace(_ workspaceId: String) {
-        _ = call("workspace.close", ["workspace_id": workspaceId])
+    func createWorkspaceAsync(_ completion: (() -> Void)? = nil) {
+        perform("workspace.create", [:], completion: completion)
+    }
+
+    func renameTabAsync(_ tabId: String, to name: String) {
+        perform("tab.rename", ["tab_id": tabId, "name": name])
     }
 }
 

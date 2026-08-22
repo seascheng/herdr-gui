@@ -85,6 +85,14 @@ final class HerdrScrollChannel {
             return false
         }
 
+        // The handshake must never block this serial queue unboundedly:
+        // isUsable() syncs onto it from the main-thread wheel path, so a
+        // wedged welcome read would freeze the whole UI. Bound it, then
+        // return the socket to blocking mode for the drain reader.
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   socklen_t(MemoryLayout<timeval>.size))
+
         // Attach resizes the terminal, so Hello must use the focused pane's
         // current allocation from the same snapshot as its terminal id.
         let hello = HerdrClientMessage.hello(
@@ -112,6 +120,14 @@ final class HerdrScrollChannel {
             Darwin.close(sock); return false
         }
 
+
+        // Handshake succeeded: back to blocking mode for the drain
+        // reader (frames arrive on the server's cadence).
+        var blocking = timeval(tv_sec: 0, tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &blocking,
+                   socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &blocking,
+                   socklen_t(MemoryLayout<timeval>.size))
         fd = sock
         attachedTerminalId = target.terminalId
 

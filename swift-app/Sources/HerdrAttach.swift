@@ -140,6 +140,12 @@ final class HerdrAttachSession {
                                                            modifiers: modifiers))
     }
 
+    /// Structured key presses for modifier-dependent herdr bindings
+    /// (switch_workspace prefix+shift+N, focus_agent prefix+alt+N).
+    func sendKeyEvents(_ keys: [(char: Character, modifiers: UInt8)]) {
+        try? send(raw: HerdrClientMessage.inputEventsKeys(keys))
+    }
+
     // MARK: internals
 
     private func startReader() {

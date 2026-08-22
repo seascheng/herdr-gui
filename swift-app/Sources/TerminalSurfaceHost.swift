@@ -194,8 +194,11 @@ final class TerminalSurfaceHost: NSView {
                                    full: full, byteCount: bytes.count, note: note)
                 }
 
-                // The crop offset is re-asserted on every frame: a silently
-                // clobbered scroll frame would leak herdr's chrome.
+                // The crop offset is re-asserted on every frame (early
+                // exit when unchanged): nothing else may own the scroll
+                // frame, and a silently clobbered offset leaks herdr's
+                // chrome into the content area — observed live when the
+                // host's layout() pass does not re-run.
                 self.applyCropOffset(force: false)
                 self.dumpGeometryIfChanged()
 
@@ -330,234 +333,25 @@ final class TerminalSurfaceHost: NSView {
         Double((liveGridGeometry()?.cell.height) ?? effectiveCellSize.height)
     }
 
-    enum HiddenPanelActivation: Equatable {
-        case sent
-        case unavailable
-        case ambiguous
+    /// Sends raw keys over the attach stream (picker typing, menu arrows).
+    func sendKeys(_ keys: String) {
+        session?.sendInput(Array(keys.utf8))
     }
 
-    private enum HiddenPanelResolution {
-        case point(column: Int, row: Int)
-        case unavailable
-        case ambiguous
+    /// Sends a herdr prefix chord over the attach stream — the documented
+    /// keybindings path a native TUI user types. herdr's app-frame
+    /// rendering follows TUI input, not API mutations (verified live:
+    /// tab.focus pushes no frames), so every display-moving operation
+    /// must go through this channel.
+    func sendPrefix(_ suffix: String) {
+        sendKeys("\u{02}" + suffix)
     }
 
-    enum HiddenPanelTarget {
-        case workspace(index: Int, labels: [[String]], split: Double)
-        case tab(index: Int, labels: [String])
-        case agent(index: Int, labels: [[String]], split: Double)
-    }
-
-    /// HERDR_DUMP_VIEWS-gated trace for the hidden-panel path: separates
-    /// no-grid / read-failure / match-failure when the semantic API
-    /// fallback starts firing on every navigation.
-    private func activateDiag(_ stage: String, _ detail: String = "") {
-        guard ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] == "1" else { return }
-        DiagLog.views("ACTIVATE \(stage) \(detail)\n")
-    }
-
-    /// Activates the matching control in herdr's own chrome over the
-    /// already-attached app stream. Resolution reads herdr's rendered
-    /// frame instead of duplicating its configurable row layout, so the
-    /// click exercises exactly the input path a native TUI click would.
-    /// A target that is clipped, still rendering after resize, or
-    /// text-ambiguous is reported to the caller for semantic API
-    /// fallback.
-    @discardableResult
-    func activate(_ target: HiddenPanelTarget) -> HiddenPanelActivation {
-        guard let grid = currentGrid else {
-            activateDiag("no-grid")
-            return .unavailable
-        }
-        let resolution: HiddenPanelResolution
-        switch target {
-        case .tab(let index, let labels):
-            let lines = hiddenPanelLines()
-            guard labels.indices.contains(index), let lines, !lines.isEmpty
-            else {
-                activateDiag("tab", "index=\(index) lines=\(lines?.count ?? -1)")
-                return .unavailable
-            }
-            resolution = tabPoint(index: index, labels: labels, line: lines[0])
-
-        case .workspace(let index, let labels, let split):
-            let lines = hiddenPanelLines()
-            guard labels.indices.contains(index), let lines
-            else {
-                activateDiag("ws", "index=\(index) lines=\(lines?.count ?? -1)")
-                return .unavailable
-            }
-            guard let rows = sidebarRows(labels: labels, lines: lines, grid: grid,
-                                         range: workspaceSection(grid: grid, split: split)),
-                  rows.indices.contains(index)
-            else {
-                activateDiag("ws", "no-rows grid=\(grid.0)x\(grid.1) split=\(split) "
-                    + "lines=\(lines.count) head=\(lines.prefix(4).joined(separator: "⏎"))")
-                return .unavailable
-            }
-            switch rows[index] {
-            case .point(let column, let row):
-                activateDiag("ws", "index=\(index) → \(column),\(row)")
-                resolution = .point(column: column, row: row)
-            case .unavailable: resolution = .unavailable
-            case .ambiguous: resolution = .ambiguous
-            }
-
-        case .agent(let index, let labels, let split):
-            let lines = hiddenPanelLines()
-            guard labels.indices.contains(index), let lines
-            else {
-                activateDiag("agent", "index=\(index) lines=\(lines?.count ?? -1)")
-                return .unavailable
-            }
-            guard let rows = sidebarRows(labels: labels, lines: lines, grid: grid,
-                                         range: agentSection(grid: grid, split: split)),
-                  rows.indices.contains(index)
-            else {
-                activateDiag("agent", "no-rows index=\(index) lines=\(lines.count)")
-                return .unavailable
-            }
-            switch rows[index] {
-            case .point(let column, let row):
-                activateDiag("agent", "index=\(index) → \(column),\(row)")
-                resolution = .point(column: column, row: row)
-            case .unavailable: resolution = .unavailable
-            case .ambiguous: resolution = .ambiguous
-            }
-        }
-
-        switch resolution {
-        case .point(let column, let row):
-            return clickHiddenPanel(column: column, row: row) ? .sent : .unavailable
-        case .unavailable: return .unavailable
-        case .ambiguous: return .ambiguous
-        }
-    }
-
-    private func clickHiddenPanel(column: Int, row: Int) -> Bool {
-        guard let grid = currentGrid,
-              let session, session.isAttached,
-              column >= 0, column < Int(grid.0), row >= 0, row < Int(grid.1)
-        else { return false }
-        session.sendMouseEvent(kind: 0, button: 0,
-                               column: UInt16(clamping: column),
-                               row: UInt16(clamping: row), modifiers: 0)
-        session.sendMouseEvent(kind: 1, button: 0,
-                               column: UInt16(clamping: column),
-                               row: UInt16(clamping: row), modifiers: 0)
-        return true
-    }
-
-    /// The full app frame's rendered text, one entry per grid row.
-    private func hiddenPanelLines() -> [String]? {
-        guard let surface = surfaceView?.surface else { return nil }
-        var text = ghostty_text_s()
-        let selection = ghostty_selection_s(
-            top_left: ghostty_point_s(
-                tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
-            bottom_right: ghostty_point_s(
-                tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
-            rectangle: false)
-        guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
-        return String(cString: text.text).components(separatedBy: "\n")
-    }
-
-    /// Locates a tab label on herdr's top tab row (grid row 0 after the
-    /// sidebar columns) and returns the click cell inside the label.
-    private func tabPoint(index: Int, labels: [String], line: String)
-        -> HiddenPanelResolution {
-        guard labels.indices.contains(index) else { return .unavailable }
-        let contentStart = min(max(Int(chromeSidebarCols), 0), line.count)
-        let content = String(line.dropFirst(contentStart))
-        // Swift String offsets are grapheme-based, while terminal columns
-        // are cell-based. Non-ASCII tab bars can be double-width or wider;
-        // force those cases through semantic API fallback rather than risk
-        // a plausible but wrong click column.
-        guard content.unicodeScalars.allSatisfy({ $0.value < 128 }) else {
-            return .unavailable
-        }
-        let normalized = normalizeSidebarText(labels[index])
-        guard !normalized.isEmpty else { return .unavailable }
-
-        var matches: [Range<String.Index>] = []
-        var searchStart = content.startIndex
-        while searchStart < content.endIndex,
-              let range = content.range(
-                  of: normalized,
-                  options: [.caseInsensitive, .diacriticInsensitive],
-                  range: searchStart..<content.endIndex) {
-            matches.append(range)
-            guard range.upperBound < content.endIndex else { break }
-            searchStart = content.index(after: range.upperBound)
-        }
-        guard !matches.isEmpty else { return .unavailable }
-        guard matches.count == 1, let range = matches.first else { return .ambiguous }
-        let offset = content.distance(from: content.startIndex, to: range.lowerBound)
-        let width = max(content.distance(from: range.lowerBound, to: range.upperBound), 1)
-        return .point(column: contentStart + offset + width / 2, row: 0)
-    }
-
-    private func workspaceSection(grid: (UInt16, UInt16), split: Double) -> Range<Int> {
-        1..<max(workspaceSectionEnd(grid: grid, split: split), 1)
-    }
-
-    private func agentSection(grid: (UInt16, UInt16), split: Double) -> Range<Int> {
-        let start = min(workspaceSectionEnd(grid: grid, split: split) + 2, Int(grid.1))
-        return start..<Int(grid.1)
-    }
-
-    private func workspaceSectionEnd(grid: (UInt16, UInt16), split: Double) -> Int {
-        let ratio = min(max(split, 0.1), 0.9)
-        return min(max(Int((Double(grid.1) * ratio).rounded()), 3), Int(grid.1) - 3) - 1
-    }
-
-    /// Finds each label group's sidebar row, in order, within the given
-    /// grid-row range. Sequential search keeps distinct rows from
-    /// colliding when one label is a prefix of another.
-    private func sidebarRows(labels: [[String]], lines: [String], grid: (UInt16, UInt16),
-                             range: Range<Int>) -> [HiddenPanelResolution]? {
-        let sidebarCharacters = max(Int(chromeSidebarCols) - 1, 1)
-        var resolutions: [HiddenPanelResolution] = []
-        var searchStart = max(range.lowerBound, 0)
-
-        for alternatives in labels {
-            let normalizedLabels = alternatives.map(normalizeSidebarText).filter { !$0.isEmpty }
-            let searchEnd = min(range.upperBound, lines.count)
-            guard !normalizedLabels.isEmpty, searchStart < searchEnd else {
-                return nil
-            }
-            var matches: [Int] = []
-            for row in searchStart..<searchEnd {
-                let rendered = normalizeSidebarText(String(lines[row].prefix(sidebarCharacters)))
-                if normalizedLabels.contains(where: { sidebarLine(rendered, matches: $0) }) {
-                    matches.append(row)
-                }
-            }
-            guard let row = matches.first else { return nil }
-            resolutions.append(matches.count == 1
-                ? .point(column: 2, row: row) : .ambiguous)
-            searchStart = row + 1
-        }
-        return resolutions
-    }
-
-    private func normalizeSidebarText(_ value: String) -> String {
-        value.components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    private func sidebarLine(_ rendered: String, matches label: String) -> Bool {
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-        if rendered.range(of: label, options: options) != nil { return true }
-        // Truncated rows keep a prefix of the label followed by herdr's
-        // ellipsis; accept an unambiguous ≥3-character visible prefix.
-        guard rendered.contains("…") else { return false }
-        let prefix = rendered.components(separatedBy: "…")[0]
-        guard let start = prefix.rangeOfCharacter(from: .alphanumerics) else { return false }
-        let visibleLabel = String(prefix[start.lowerBound...])
-        return visibleLabel.count >= 3 && label.hasPrefix(visibleLabel)
+    /// Sends a herdr prefix chord as STRUCTURED key events: modifier
+    /// bindings (prefix+shift+N, prefix+alt+N) only match when the shift/
+    /// alt bits survive the trip, which raw Input bytes cannot express.
+    func sendPrefixChord(_ char: Character, _ modifiers: UInt8) {
+        session?.sendKeyEvents([(char: "b", modifiers: 0x02), (char: char, modifiers: modifiers)])
     }
 
     /// Synthetic click on herdr's own sidebar launcher. herdr's sidebar
@@ -660,22 +454,24 @@ final class TerminalSurfaceHost: NSView {
     }
 
     /// Re-connect with the current grid; exponential backoff capped at 4s.
+    /// A transiently unreported surface size must not strand the mirror:
+    /// fall back to the last known grid instead of resetting it — a reset
+    /// left the app showing a frozen frame until the next window resize.
     private func scheduleReconnect() {
         guard let session, !session.isAttached else { return }
-        guard let size = surfaceView?.surfaceSize, size.columns >= 10, size.rows >= 4 else {
-            lastGrid = (0, 0)
-            return
-        }
+        guard reconnectGrid() != nil else { return }
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), 4.0)
         reconnectAttempt += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.window != nil else { return }
-            guard let size = self.surfaceView?.surfaceSize, size.columns >= 10, size.rows >= 4 else {
-                self.lastGrid = (0, 0)
-                return
-            }
-            self.connect(cols: UInt16(clamping: size.columns), rows: UInt16(clamping: size.rows))
+            guard let grid = self.reconnectGrid() else { return }
+            self.connect(cols: grid.0, rows: grid.1)
         }
+    }
+
+    private func reconnectGrid() -> (UInt16, UInt16)? {
+        if let grid = currentGrid { return grid }
+        return lastGrid.0 >= 10 && lastGrid.1 >= 4 ? lastGrid : nil
     }
 
     /// Requests a new server baseline for the current Ghostty grid. A normal
