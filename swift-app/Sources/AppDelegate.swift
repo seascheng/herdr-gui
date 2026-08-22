@@ -86,14 +86,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.applicationIconImage = AppIcon.image
         setupStatusBarItem()
+        // Our OWN ghostty home in app support: config + themes copied once
+        // from the user's live Ghostty, then owned by hertty. The env var
+        // MUST be set before ghostty_init — libghostty captures the
+        // resources dir during init. Without it, CLI launches (which
+        // inherit GHOSTTY_RESOURCES_DIR from a hosting Ghostty) and
+        // Finder launches resolve themes against different roots.
+        let ownHome = NSHomeDirectory()
+            + "/Library/Application Support/hertty/ghostty"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: ownHome, withIntermediateDirectories: true)
+        let liveConfigs = [
+            NSHomeDirectory()
+                + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
+            NSHomeDirectory() + "/.config/ghostty/config",
+        ]
+        if !fm.fileExists(atPath: ownHome + "/config"),
+           let source = liveConfigs.first(where: { fm.fileExists(atPath: $0) }) {
+            try? fm.copyItem(atPath: source, toPath: ownHome + "/config")
+        }
+        if !fm.fileExists(atPath: ownHome + "/themes/Arthur") {
+            let seed = "/Applications/Ghostty.app/Contents/Resources/ghostty/themes"
+            if fm.fileExists(atPath: seed) {
+                try? fm.copyItem(atPath: seed, toPath: ownHome + "/themes")
+            }
+        }
+        if fm.fileExists(atPath: ownHome + "/themes") {
+            setenv("GHOSTTY_RESOURCES_DIR", ownHome, 1)
+        }
+        let configPath = fm.fileExists(atPath: ownHome + "/config")
+            ? ownHome + "/config" : nil
+
         guard ghostty_init(0, nil) == 0 else {
             let alert = NSAlert(); alert.messageText = "ghostty_init failed"; alert.runModal()
             NSApp.terminate(nil); return
         }
 
-        let explicitConfig = NSHomeDirectory()
-            + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
-        let configPath = FileManager.default.fileExists(atPath: explicitConfig) ? explicitConfig : nil
         let app = Ghostty.App(configPath: configPath)
         guard app.readiness == .ready else {
             let alert = NSAlert()
@@ -105,6 +133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Chrome follows the terminal's resolved Ghostty config — the
         // same one the mirror surface renders with.
         Chrome.theme = ChromeTheme.from(app.config)
+
+        if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] == "1" {
+            var probe = ghostty_config_color_s()
+            let key = "background"
+            let resolved = ghostty_config_get(
+                app.config.config, &probe, key, UInt(key.utf8.count))
+            let bg = Chrome.theme.background.usingColorSpace(.sRGB)
+            DiagLog.views("THEME resolved=\(resolved) rgb=\(probe.r),\(probe.g),\(probe.b)"
+                + " env=\(ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] ?? "nil")"
+                + " chrome=\(Int((bg?.redComponent ?? 0) * 255)),\(Int((bg?.greenComponent ?? 0) * 255)),\(Int((bg?.blueComponent ?? 0) * 255))"
+                + " dark=\(Chrome.theme.isDark)\n")
+        }
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 832))
         let window = NSWindow(

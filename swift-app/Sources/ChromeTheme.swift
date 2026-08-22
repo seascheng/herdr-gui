@@ -26,10 +26,81 @@ struct ChromeTheme {
             return NSColor(srgbRed: CGFloat(v.r) / 255, green: CGFloat(v.g) / 255,
                            blue: CGFloat(v.b) / 255, alpha: 1)
         }
+        // Explicit config colors win; a theme-only config (theme = Arthur)
+        // never surfaces its palette through ghostty_config_get — the
+        // theme's own file is the source. Same key syntax as the config.
+        let themed = Self.themeFileColors(cfg)
         return ChromeTheme(
-            background: color("background") ?? fallback.background,
-            foreground: color("foreground") ?? fallback.foreground,
-            accent: color("selection-background") ?? fallback.accent)
+            background: color("background") ?? themed["background"] ?? fallback.background,
+            foreground: color("foreground") ?? themed["foreground"] ?? fallback.foreground,
+            accent: color("selection-background") ?? themed["selection-background"] ?? fallback.accent)
+    }
+
+    /// `background`/`foreground`/`selection-background` from the theme file
+    /// the config names, searched where ghostty looks for themes. One small
+    /// file read at startup — the chrome must match the terminal exactly.
+    static func themeFileColors(_ cfg: Ghostty.Config?) -> [String: NSColor] {
+        guard let trimmed = configuredThemeName() else { return [:] }
+        let home = NSHomeDirectory()
+        let candidates = [
+            ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]
+                .map { $0 + "/themes/\(trimmed)" },
+            home + "/Library/Application Support/hertty/ghostty/themes/\(trimmed)",
+            home + "/Library/Application Support/com.mitchellh.ghostty/themes/\(trimmed)",
+            home + "/.config/ghostty/themes/\(trimmed)",
+            "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(trimmed)",
+        ].compactMap { $0 }
+        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }),
+              let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [:] }
+        var result: [String: NSColor] = [:]
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let k = parts[0].trimmingCharacters(in: .whitespaces)
+            guard ["background", "foreground", "selection-background"].contains(k) else { continue }
+            let hex = parts[1].trimmingCharacters(in: .whitespaces)
+            guard let c = Self.hexColor(hex) else { continue }
+            result[k] = c
+        }
+        return result
+    }
+
+    /// The `theme =` name from the config ghostty actually loads — our
+    /// own-home copy first, then the user's live Ghostty configs.
+    static func configuredThemeName() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            home + "/Library/Application Support/hertty/ghostty/config",
+            home + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
+            home + "/Library/Application Support/com.mitchellh.ghostty/config",
+            home + "/.config/ghostty/config",
+        ]
+        for path in candidates {
+            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n") {
+                let parts = line.split(separator: "=", maxSplits: 1)
+                guard parts.count == 2,
+                      parts[0].trimmingCharacters(in: .whitespaces) == "theme" else { continue }
+                return parts[1].split(separator: ",").first
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+            }
+        }
+        return nil
+    }
+
+    /// `#rrggbb` / `#rgb` theme-file colors.
+    private static func hexColor(_ hex: String) -> NSColor? {
+        let value = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard value.count == 3 || value.count == 6,
+              let parsed = UInt64(value, radix: 16) else { return nil }
+        if value.count == 3 {
+            let r = CGFloat((parsed >> 8) & 0xF) / 15, g = CGFloat((parsed >> 4) & 0xF) / 15,
+                b = CGFloat(parsed & 0xF) / 15
+            return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        }
+        let r = CGFloat((parsed >> 16) & 0xFF) / 255, g = CGFloat((parsed >> 8) & 0xFF) / 255,
+            b = CGFloat(parsed & 0xFF) / 255
+        return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
     var isDark: Bool {
