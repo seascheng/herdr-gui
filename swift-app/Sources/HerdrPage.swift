@@ -22,6 +22,17 @@ final class HerdrPageController {
     private var reconcilePending = false
     private var pollTimer: Timer?
     private var focusedTabId = ""
+    /// Last applied sidebar state: optimistic navigation rewrites focus
+    /// on a copy of it before the server confirms the switch.
+    private var sidebarState: HerdrModel.SidebarState?
+    private struct PendingNavigation {
+        let generation: UInt64
+        let workspaceId: String
+        let tabId: String?
+    }
+    private var navigationGeneration: UInt64 = 0
+    private var pendingNavigation: PendingNavigation?
+    private var pendingNavigationTimeout: DispatchWorkItem?
     /// herdr's sidebar section split (snapshot), for launcher-row math.
     private var sidebarSplit: Double = 0.5
     private var sidebarCollapsed = false
@@ -110,9 +121,8 @@ final class HerdrPageController {
         sidebar.setCollapsed(sidebarCollapsed)
         if sidebarCollapsed { sidebarWidth.constant = 56 }
 
-        sidebar.onWorkspaceSelected = { [weak self] workspaceId in
-            self?.api.focusWorkspace(workspaceId)
-            self?.reconcileNow()
+        sidebar.onWorkspaceSelected = { [weak self] in
+            self?.focusWorkspace($0)
         }
         sidebar.onNewWorkspace = { [weak self] in
             _ = self?.api.call("workspace.create", [:])
@@ -122,13 +132,11 @@ final class HerdrPageController {
             self?.api.closeWorkspace($0)
             self?.reconcileNow()
         }
-        sidebar.onAgentSelected = { [weak self] tabId in
-            self?.api.focusTab(tabId)
-            self?.reconcileNow()
+        sidebar.onAgentSelected = { [weak self] in
+            self?.focusAgent($0)
         }
-        tabStrip.onTabIdSelected = { [weak self] tabId in
-            self?.api.focusTab(tabId)
-            self?.reconcileNow()
+        tabStrip.onTabIdSelected = { [weak self] in
+            self?.focusTab($0)
         }
         tabStrip.onCloseTab = { [weak self] tabId in
             self?.api.closeTab(tabId)
@@ -174,6 +182,10 @@ final class HerdrPageController {
     }
 
     func shutdown() {
+        pendingNavigationTimeout?.cancel()
+        pendingNavigationTimeout = nil
+        pendingNavigation = nil
+        navigationGeneration &+= 1
         pollTimer?.invalidate()
         pollTimer = nil
         reconcileCoalesce?.cancel()
@@ -198,6 +210,131 @@ final class HerdrPageController {
 
     func menuNewTab() { newTab() }
     func menuCloseTab() { api.closeTab(focusedTabId) }
+
+    // MARK: navigation (click herdr's chrome first; API only as fallback)
+
+    /// Switches workspace by clicking herdr's own sidebar row over the
+    /// attach stream — the identical input path a native TUI click takes.
+    /// A target outside the rendered frame (scrolled, clipped, collapsed)
+    /// falls back to the semantic API; the optimistic sidebar update and
+    /// a 2s confirmation timeout keep the chrome coherent either way.
+    private func focusWorkspace(_ workspaceId: String) {
+        guard let state = sidebarState,
+              state.focusedWorkspaceId != workspaceId,
+              let index = state.workspaces.firstIndex(where: { $0.id == workspaceId })
+        else { return }
+
+        let result = host?.activate(.workspace(
+            index: index,
+            labels: state.workspaces.map { [$0.label] },
+            split: state.sidebarSplit))
+        let focusedWorkspace = state.workspaces[index]
+        let focusedTabId = focusedWorkspace.activeTabId
+            ?? state.tabsByWorkspace[workspaceId]?.first?.tabId
+        navigationGeneration &+= 1
+        pendingNavigation = PendingNavigation(
+            generation: navigationGeneration, workspaceId: workspaceId, tabId: nil)
+        applySidebarState(stateWithFocus(
+            state, workspaceId: workspaceId, tabId: focusedTabId))
+        scheduleFallbackTimeout(generation: navigationGeneration)
+        guard result != .sent else { return }
+        let generation = navigationGeneration
+        api.focusWorkspaceAsync(workspaceId) { [weak self] success in
+            guard let self, self.navigationGeneration == generation else { return }
+            if !success { self.clearPendingNavigationIfCurrent() }
+            self.reconcileNow()
+        }
+    }
+
+    private func focusTab(_ tabId: String) {
+        guard let state = sidebarState,
+              state.focusedTabId != tabId,
+              let workspaceId = state.focusedWorkspaceId,
+              let tabs = state.tabsByWorkspace[workspaceId],
+              let index = tabs.firstIndex(where: { $0.tabId == tabId })
+        else { return }
+
+        let result = host?.activate(.tab(index: index, labels: tabs.map(\.label)))
+        navigationGeneration &+= 1
+        pendingNavigation = PendingNavigation(
+            generation: navigationGeneration, workspaceId: workspaceId, tabId: tabId)
+        applySidebarState(stateWithFocus(state, workspaceId: workspaceId, tabId: tabId))
+        scheduleFallbackTimeout(generation: navigationGeneration)
+        guard result != .sent else { return }
+        let generation = navigationGeneration
+        api.focusTabAsync(tabId) { [weak self] success in
+            guard let self, self.navigationGeneration == generation else { return }
+            if !success { self.clearPendingNavigationIfCurrent() }
+            self.reconcileNow()
+        }
+    }
+
+    private func focusAgent(_ tabId: String) {
+        guard let state = sidebarState,
+              let index = state.agents.firstIndex(where: { $0.tabId == tabId })
+        else { return }
+        let result = host?.activate(.agent(
+            index: index,
+            labels: state.agents.map(Self.agentPanelLabels),
+            split: state.sidebarSplit))
+        let agent = state.agents[index]
+        navigationGeneration &+= 1
+        pendingNavigation = PendingNavigation(
+            generation: navigationGeneration,
+            workspaceId: agent.workspaceId,
+            tabId: agent.tabId)
+        applySidebarState(stateWithFocus(
+            state, workspaceId: agent.workspaceId, tabId: agent.tabId))
+        scheduleFallbackTimeout(generation: navigationGeneration)
+        guard result != .sent else { return }
+        let generation = navigationGeneration
+        api.focusTabAsync(agent.tabId) { [weak self] success in
+            guard let self, self.navigationGeneration == generation else { return }
+            if !success { self.clearPendingNavigationIfCurrent() }
+            self.reconcileNow()
+        }
+    }
+
+    /// Label alternatives for locating an agent row in herdr's agent
+    /// panel: the rendered "workspace · tab" composite first, then the
+    /// parts herdr may show instead when columns run narrow.
+    private static func agentPanelLabels(_ agent: HerdrModel.AgentRef) -> [String] {
+        let workspace = agent.workspaceLabel ?? agent.workspaceId
+        let tab = agent.tabLabel ?? agent.tabId
+        return ["\(workspace) · \(tab)", workspace, agent.name, agent.kind]
+    }
+
+    private func stateWithFocus(_ state: HerdrModel.SidebarState,
+                                workspaceId: String, tabId: String?) -> HerdrModel.SidebarState {
+        let workspace = state.workspaces.first { $0.id == workspaceId }
+        return HerdrModel.SidebarState(
+            label: workspace?.label ?? state.label,
+            focusedTabId: tabId,
+            sidebarSplit: state.sidebarSplit,
+            tabsByWorkspace: state.tabsByWorkspace,
+            workspaces: state.workspaces,
+            focusedWorkspaceId: workspaceId,
+            agents: state.agents)
+    }
+
+    /// Server confirmation may never arrive (click dropped, frame gap);
+    /// after the timeout the next snapshot reconciles from server truth.
+    private func scheduleFallbackTimeout(generation: UInt64) {
+        pendingNavigationTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.navigationGeneration == generation else { return }
+            self.clearPendingNavigationIfCurrent()
+            self.reconcileNow()
+        }
+        pendingNavigationTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    private func clearPendingNavigationIfCurrent() {
+        pendingNavigation = nil
+        pendingNavigationTimeout?.cancel()
+        pendingNavigationTimeout = nil
+    }
 
     // MARK: reconcile (native chrome only; content comes from the stream)
 
@@ -230,10 +367,21 @@ final class HerdrPageController {
             host?.scrollChannel?.updateTarget(terminalId: nil, columns: 0, rows: 0)
         }
 
-        let focused = state.focusedTabId ?? state.tabs.first?.tabId ?? ""
-        let tabs = state.tabs.map { (id: $0.tabId, name: $0.label) }
-        focusedTabId = focused
         sidebarSplit = state.sidebarSplit
+        // While an optimistic navigation is pending, arriving snapshots
+        // still describe the OLD focus. Applying them would flip the
+        // chrome back mid-switch; hold the optimistic state until the
+        // server confirms (a snapshot matching the target) or the
+        // fallback timeout reconciles from truth.
+        if let pending = pendingNavigation {
+            let matchesWorkspace = state.focusedWorkspaceId == pending.workspaceId
+            let matchesTab = pending.tabId == nil || state.focusedTabId == pending.tabId
+            if matchesWorkspace && matchesTab {
+                clearPendingNavigationIfCurrent()
+            } else {
+                return
+            }
+        }
         if ProcessInfo.processInfo.environment["HERDR_OPEN_SETTINGS"] == "1",
            !didAutoOpenSettings {
             didAutoOpenSettings = true
@@ -241,11 +389,20 @@ final class HerdrPageController {
                 self?.host?.openHerdrOverlay(split: state.sidebarSplit, keys: "\r")
             }
         }
+        applySidebarState(state)
+    }
+
+    private func applySidebarState(_ state: HerdrModel.SidebarState) {
+        sidebarState = state
+        let tabs = state.tabsByWorkspace[state.focusedWorkspaceId ?? ""] ?? []
+        let focused = state.focusedTabId ?? tabs.first?.tabId ?? ""
+        focusedTabId = focused
         sidebar?.render(workspaces: state.workspaces,
                         focusedWorkspaceId: state.focusedWorkspaceId,
                         agents: state.agents,
                         focusedTabId: state.focusedTabId)
-        tabStrip?.render(tabs: tabs, selectedId: focused)
+        tabStrip?.render(tabs: tabs.map { (id: $0.tabId, name: $0.label) },
+                         selectedId: focused)
     }
 
     private func updateChrome(from layout: [String: Any]) {

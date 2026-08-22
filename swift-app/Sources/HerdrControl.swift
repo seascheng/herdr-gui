@@ -20,14 +20,27 @@ final class HerdrAPI {
         string: "~/.config/herdr/herdr-client.sock").expandingTildeInPath
 
     let socketPath: String
+    /// Navigation fallback only: the semantic API click-path replacement
+    /// runs off the main thread so a slow handler never freezes chrome.
+    private let asyncQueue = DispatchQueue(
+        label: "herdr.api.fallback", qos: .userInitiated, attributes: .concurrent)
 
     init(socketPath: String = HerdrAPI.defaultSocketPath) {
         self.socketPath = socketPath
     }
 
-    func call(_ method: String, _ params: [String: Any]) -> [String: Any]? {
+    func call(_ method: String, _ params: [String: Any],
+              timeout: TimeInterval? = nil) -> [String: Any]? {
         guard let fd = UnixSocket.connect(path: socketPath) else { return nil }
         defer { Darwin.close(fd) }
+        if let timeout {
+            let seconds = max(1, Int(timeout.rounded(.up)))
+            var value = timeval(tv_sec: seconds, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value,
+                       socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value,
+                       socklen_t(MemoryLayout<timeval>.size))
+        }
 
         let request: [String: Any] = ["id": "hertty", "method": method, "params": params]
         guard var data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
@@ -38,6 +51,28 @@ final class HerdrAPI {
               let result = json["result"] as? [String: Any]
         else { return nil }
         return result
+    }
+
+    /// One-shot control request off the main thread. Only navigation
+    /// fallback uses this path, so a clipped or ambiguous mirror target
+    /// never blocks native chrome or the attach stream.
+    func callAsync(_ method: String, _ params: [String: Any],
+                   completion: @escaping ([String: Any]?) -> Void) {
+        asyncQueue.async { [self] in
+            let result = call(method, params, timeout: 3)
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    func focusTabAsync(_ tabId: String, completion: @escaping (Bool) -> Void) {
+        callAsync("tab.focus", ["tab_id": tabId]) { completion($0 != nil) }
+    }
+
+    func focusWorkspaceAsync(_ workspaceId: String,
+                             completion: @escaping (Bool) -> Void) {
+        callAsync("workspace.focus", ["workspace_id": workspaceId]) {
+            completion($0 != nil)
+        }
     }
 
     func snapshot() -> [String: Any]? {
@@ -53,20 +88,12 @@ final class HerdrAPI {
         return tab["tab_id"] as? String
     }
 
-    func focusTab(_ tabId: String) {
-        _ = call("tab.focus", ["tab_id": tabId])
-    }
-
     func closeTab(_ tabId: String) {
         _ = call("tab.close", ["tab_id": tabId])
     }
 
     func renameTab(_ tabId: String, to name: String) {
         _ = call("tab.rename", ["tab_id": tabId, "name": name])
-    }
-
-    func focusWorkspace(_ workspaceId: String) {
-        _ = call("workspace.focus", ["workspace_id": workspaceId])
     }
 
     func closeWorkspace(_ workspaceId: String) {
@@ -83,13 +110,16 @@ enum HerdrModel {
         let label: String
         let tabCount: Int
         let agentStatus: String
+        let activeTabId: String?
     }
     struct AgentRef {
         let name: String
-        let status: String
+        var status: String
         let kind: String
         let tabId: String
+        let tabLabel: String?
         let workspaceId: String
+        let workspaceLabel: String?
         /// Monitoring context (AgentInfo): cwd / terminal title / any
         /// state_labels entry — shown as the agent row's second line.
         let cwd: String?
@@ -101,7 +131,9 @@ enum HerdrModel {
         let label: String
         let focusedTabId: String?
         let sidebarSplit: Double
-        let tabs: [TabRef]
+        /// Tabs of EVERY workspace: optimistic navigation needs the
+        /// target workspace's list before the server confirms the switch.
+        let tabsByWorkspace: [String: [TabRef]]
         let workspaces: [WorkspaceRef]
         let focusedWorkspaceId: String?
         let agents: [AgentRef]
@@ -120,12 +152,14 @@ enum HerdrModel {
 
         let label = ws["label"] as? String ?? focusedWs
         let focusedTabId = snapshot["focused_tab_id"] as? String
-        let tabs = tabsRaw
-            .filter { $0["workspace_id"] as? String == focusedWs }
-            .compactMap { (t: [String: Any]) -> TabRef? in
-                guard let tabId = t["tab_id"] as? String else { return nil }
-                return TabRef(tabId: tabId, label: (t["label"] as? String) ?? tabId)
+        let tabsByWorkspace = Dictionary(grouping: tabsRaw, by: {
+            ($0["workspace_id"] as? String) ?? ""
+        }).mapValues { tabs in
+            tabs.compactMap { tab -> TabRef? in
+                guard let tabId = tab["tab_id"] as? String else { return nil }
+                return TabRef(tabId: tabId, label: (tab["label"] as? String) ?? tabId)
             }
+        }
 
         let workspaces = workspacesRaw.compactMap { w -> WorkspaceRef? in
             guard let id = w["workspace_id"] as? String else { return nil }
@@ -133,9 +167,14 @@ enum HerdrModel {
                 id: id,
                 label: (w["label"] as? String) ?? id,
                 tabCount: (w["tab_count"] as? Int) ?? 0,
-                agentStatus: (w["agent_status"] as? String) ?? "unknown")
+                agentStatus: (w["agent_status"] as? String) ?? "unknown",
+                activeTabId: w["active_tab_id"] as? String)
         }
 
+        let workspaceLabels = Dictionary(
+            uniqueKeysWithValues: workspaces.map { ($0.id, $0.label) })
+        let tabLabels = Dictionary(uniqueKeysWithValues:
+            tabsByWorkspace.values.flatMap { $0 }.map { ($0.tabId, $0.label) })
         let agents = (snapshot["agents"] as? [[String: Any]] ?? []).compactMap { a -> AgentRef? in
             guard let tabId = a["tab_id"] as? String else { return nil }
             let name = (a["name"] as? String)
@@ -153,7 +192,9 @@ enum HerdrModel {
                 status: (a["agent_status"] as? String) ?? "unknown",
                 kind: kind,
                 tabId: tabId,
+                tabLabel: tabLabels[tabId],
                 workspaceId: (a["workspace_id"] as? String) ?? "",
+                workspaceLabel: workspaceLabels[(a["workspace_id"] as? String) ?? ""],
                 cwd: (a["cwd"] as? String),
                 title: (a["terminal_title_stripped"] as? String),
                 stateLabel: stateLabel)
@@ -162,7 +203,7 @@ enum HerdrModel {
             label: label,
             focusedTabId: focusedTabId,
             sidebarSplit: split,
-            tabs: tabs,
+            tabsByWorkspace: tabsByWorkspace,
             workspaces: workspaces,
             focusedWorkspaceId: focusedWs,
             agents: agents)
