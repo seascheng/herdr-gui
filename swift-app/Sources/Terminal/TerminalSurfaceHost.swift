@@ -32,7 +32,8 @@ final class TerminalSurfaceHost: NSView {
     private var sizeCancellable: Any?
     private var cellSizeCancellable: Any?
 
-    private var isRendererPresented = false
+    private var lastFrameAppliedAt: Date?
+    private var lastRendererPresentedAt: Date?
     private var inputRouter: TerminalInputRouter?
     /// herdr's MouseCapture notice: true while the focused pane app wants
     /// mouse reporting. Gates wheel routing (see TerminalInputRouter).
@@ -164,7 +165,7 @@ final class TerminalSurfaceHost: NSView {
             session?.sendInput(bytes)
         }
         config.onRendererActivity = { [weak self] in
-            DispatchQueue.main.async { self?.isRendererPresented = true }
+            DispatchQueue.main.async { self?.lastRendererPresentedAt = Date() }
         }
 
         let view = MirrorSurfaceView(app, baseConfig: config)
@@ -246,7 +247,7 @@ final class TerminalSurfaceHost: NSView {
                     }
                 }
                 if full { self.awaitingFullFrame = nil }
-                self.isRendererPresented = false
+                self.lastFrameAppliedAt = Date()
                 dump(full ? "applied full" : "applied")
                 ghostty_surface_draw(surface)
             }
@@ -284,17 +285,27 @@ final class TerminalSurfaceHost: NSView {
             self.layoutSubtreeIfNeeded()
         }
 
-        // Repair only until the renderer confirms a presented frame. Normal
-        // frames use draw(); rebuilding a healthy renderer is wasted GPU work.
+        // Repair only on a TRUE presentation stall: frames were applied
+        // but the renderer has confirmed nothing for a while. The old
+        // `!isRendererPresented` flag flipped on every applied frame and
+        // reset only after the next present (~16ms), so a 0.5s tick could
+        // land inside that window during omp's rapid updates and rebuild
+        // a HEALTHY renderer — a visible flash every few seconds. Never
+        // rebuild a healthy renderer (herdr-gui 869c966's lesson).
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
             guard let self, self.surfaceView != nil else {
                 timer.invalidate()
                 return
             }
-            guard !self.isRendererPresented,
-                  self.window != nil,
-                  !self.isHidden
+            guard self.window != nil, !self.isHidden,
+                  let appliedAt = self.lastFrameAppliedAt,
+                  let presentedAt = self.lastRendererPresentedAt,
+                  appliedAt > presentedAt,
+                  Date().timeIntervalSince(presentedAt) > 1.5
             else { return }
+            if ProcessInfo.processInfo.environment["HERDR_DUMP_FRAMES"] == "1" {
+                DiagLog.frames("REBUILD stall \(Int(Date().timeIntervalSince(presentedAt) * 1000))ms\n")
+            }
             self.rebuildRenderer()
         }
         updateSurfaceVisibility()
@@ -321,7 +332,7 @@ final class TerminalSurfaceHost: NSView {
     }
 
     @objc private func screenChanged() {
-        isRendererPresented = false
+        lastRendererPresentedAt = nil
         updateSurfaceVisibility()
     }
 
@@ -336,10 +347,10 @@ final class TerminalSurfaceHost: NSView {
             && window?.occlusionState.contains(.visible) == true
         ghostty_surface_set_occlusion(surface, visible)
         guard visible else {
-            isRendererPresented = false
+            lastRendererPresentedAt = nil
             return
         }
-        isRendererPresented = false
+        lastRendererPresentedAt = nil
         rebuildRenderer()
     }
 
