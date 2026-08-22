@@ -64,6 +64,9 @@ final class HerdrAttachSession {
             }
             flushPendingInput()
             startReader()
+            if ProcessInfo.processInfo.environment["HERDR_DUMP_FRAMES"] == "1" {
+                DiagLog.frames("CONN t=\(String(format: "%.6f", ProcessInfo.processInfo.systemUptime)) attached grid=\(cols)x\(rows)\n")
+            }
 
         } catch {
             queue.sync { if sock == fd { Darwin.close(fd); sock = -1 } }
@@ -160,6 +163,9 @@ final class HerdrAttachSession {
             do {
                 let payload = try readFrame(fd: fd)
                 let msg = HerdrServerMessage.decode(payload)
+                if ProcessInfo.processInfo.environment["HERDR_DUMP_FRAMES"] == "1" {
+                    DiagLog.frames("READ t=\(String(format: "%.6f", ProcessInfo.processInfo.systemUptime)) gen=\(gen) \(Self.describe(msg))\n")
+                }
                 if case let .terminalFrame(sequence, _, _, _, _) = msg {
                     if sequence > lastSequence + 1 && lastSequence > 0 {
                         // The server does not advance its ANSI baseline when
@@ -180,9 +186,28 @@ final class HerdrAttachSession {
             } catch {
                 queue.sync { if gen == generation { isAttached = false } }
                 guard queue.sync(execute: { gen == generation }) else { return }
+                if ProcessInfo.processInfo.environment["HERDR_DUMP_FRAMES"] == "1" {
+                    DiagLog.frames("READ-EXIT t=\(String(format: "%.6f", ProcessInfo.processInfo.systemUptime)) gen=\(gen) error=\(error)\n")
+                }
                 onDisconnect?("\(error)")
                 return
             }
+        }
+    }
+
+    /// Env-gated (HERDR_DUMP_FRAMES) one-line description of a decoded
+    /// server message — the reader-side truth of what herdr pushes.
+    private static func describe(_ msg: HerdrServerMessage) -> String {
+        switch msg {
+        case .welcome(let v, let ansi, let err):
+            return "welcome v=\(v) ansi=\(ansi) err=\(err ?? "-")"
+        case .terminalFrame(let seq, let w, let h, let full, let bytes):
+            return "frame seq=\(seq) grid=\(w)x\(h) full=\(full ? 1 : 0) bytes=\(bytes.count)"
+        case .mouseCapture(let on): return "mouse-capture on=\(on)"
+        case .windowTitle(let t): return "title \(t ?? "-")"
+        case .clipboard: return "clipboard"
+        case .shutdown(let r): return "shutdown \(r ?? "-")"
+        case .unknown(let v): return "unknown variant=\(v)"
         }
     }
 

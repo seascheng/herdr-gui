@@ -28,8 +28,12 @@ final class SessionBarView: NSView {
         stack.setHuggingPriority(.required, for: .horizontal)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
-        serversButton.symbol = "server.rack"
-        serversButton.pointSize = 13
+        // Add-session affordance: a plus, not a server glyph — the
+        // popup lists what you can open (Terminal first, then hosts).
+        serversButton.symbol = "plus"
+        // Theme icon tint (like every other chrome button), not the dim
+        // secondary-label default.
+        serversButton.tint = Chrome.theme.iconTint
         serversButton.onClick = { [weak self] in
             guard let self,
                   let menu = self.serversMenuProvider?() else { return }
@@ -77,9 +81,10 @@ final class SessionBarView: NSView {
             let segment = TabSegmentView()
             segment.configure(text: spec.label, selected: spec.id == activeId)
             segment.onClick = { [weak self] in self?.onSessionSelected?(index) }
-            // Pinned local session: no close affordance. Labels come
-            // from ssh aliases (no rename) — both default to nil.
-            if case .ssh = spec.target {
+            // The pinned default local herdr session has no close
+            // affordance; everything else (local Terminal included)
+            // can be closed.
+            if !(spec.target == .local && spec.wantsHerdr) {
                 segment.onClose = { [weak self] in self?.onSessionClosed?(index) }
             }
             stack.addArrangedSubview(segment)

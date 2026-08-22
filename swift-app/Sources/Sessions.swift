@@ -3,8 +3,9 @@ import Foundation
 // MARK: - session model
 
 /// One selectable connection in the servers menu / session bar.
-/// Local always runs herdr; ssh hosts choose between a herdr mirror
-/// (tunnel + full chrome) and a plain ssh terminal page.
+/// Local herdr is the pinned default page; "Terminal" (local, no
+/// herdr) opens a plain shell surface; ssh hosts choose between a
+/// herdr mirror (tunnel + full chrome) and a plain ssh terminal page.
 struct SessionSpec: Equatable {
     enum Target: Equatable {
         case local
@@ -16,14 +17,14 @@ struct SessionSpec: Equatable {
 
     var label: String {
         switch target {
-        case .local: return "Local"
+        case .local: return wantsHerdr ? "Local" : "Terminal"
         case .ssh(let alias): return alias
         }
     }
 
     var id: String {
         switch target {
-        case .local: return "local"
+        case .local: return wantsHerdr ? "local" : "local:term"
         case .ssh(let alias): return "ssh:\(alias):\(wantsHerdr ? "herdr" : "term")"
         }
     }
@@ -151,7 +152,7 @@ final class SSHTunnel {
     private var process: Process?
     private var readyPoller: Timer?
     private let dir = NSTemporaryDirectory()
-        + "herdr-mirror-\(UUID().uuidString.prefix(8))"
+        + "hertty-\(UUID().uuidString.prefix(8))"
 
     var onError: ((Error) -> Void)?
 

@@ -116,12 +116,23 @@ final class TerminalSurfaceHost: NSView {
         lastDumpedGeometry = key
         let line = "GEOM scroll=\(scroll.frame) surface=\(view.frame) "
             + "chrome=\(chromeSidebarCols) cell=\(lastCellSize) pad=\(lastPad)\n"
-        let url = URL(fileURLWithPath: "/tmp/herdr-frames.log")
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
-        } else {
-            try? line.data(using: .utf8)?.write(to: url)
-        }
+        DiagLog.frames(line)
+    }
+
+    private var lastDumpedSequence: UInt64 = 0
+
+    /// Env-gated frame flow log (HERDR_DUMP_FRAMES=1 → /tmp/herdr-frames.log):
+    /// one line per incoming app frame — accepted or rejected, with the
+    /// reason — so delivery stalls are separable from render-side ones.
+    private func dumpFrame(sequence: UInt64, width: UInt16, height: UInt16,
+                           full: Bool, byteCount: Int, note: String) {
+        guard ProcessInfo.processInfo.environment["HERDR_DUMP_FRAMES"] == "1" else { return }
+        let gap = lastDumpedSequence == 0 ? 0 : sequence - lastDumpedSequence
+        lastDumpedSequence = sequence
+        let line = "FRAME t=\(String(format: "%.6f", ProcessInfo.processInfo.systemUptime)) "
+            + "seq=\(sequence) gap=\(gap) full=\(full ? 1 : 0) bytes=\(byteCount) "
+            + "grid=\(width)x\(height) \(note)\n"
+        DiagLog.frames(line)
     }
 
     private var lastCellSize = NSSize(width: 9, height: 17)
@@ -175,18 +186,25 @@ final class TerminalSurfaceHost: NSView {
         session.onMessage = { [weak self] message in
             DispatchQueue.main.async {
                 guard let self,
-                      case let .terminalFrame(_, width, height, full, bytes) = message,
-                      let surface = self.surfaceView?.surface,
-                      let grid = self.currentGrid
+                      case let .terminalFrame(sequence, width, height, full, bytes) = message,
+                      let surface = self.surfaceView?.surface
                 else { return }
+                func dump(_ note: String) {
+                    self.dumpFrame(sequence: sequence, width: width, height: height,
+                                   full: full, byteCount: bytes.count, note: note)
+                }
 
                 // The crop offset is re-asserted on every frame: a silently
                 // clobbered scroll frame would leak herdr's chrome.
                 self.applyCropOffset(force: false)
                 self.dumpGeometryIfChanged()
 
-
+                guard let grid = self.currentGrid else {
+                    dump("drop no-grid")
+                    return
+                }
                 guard width == grid.0, height == grid.1 else {
+                    dump("drop grid-mismatch local=\(grid.0)x\(grid.1)")
                     self.requestFullFrame(replacePending: false)
                     return
                 }
@@ -194,11 +212,13 @@ final class TerminalSurfaceHost: NSView {
                     $0.0 == grid.0 && $0.1 == grid.1
                 } ?? false
                 guard !awaitingThisGrid || full else {
+                    dump("drop awaiting-full")
                     self.requestFullFrame(replacePending: false)
                     return
                 }
                 if full,
                    !self.prepareForFullFrame(surface: surface, grid: grid) {
+                    dump("drop prepare-failed")
                     self.requestFullFrame(replacePending: false)
                     return
                 }
@@ -210,9 +230,8 @@ final class TerminalSurfaceHost: NSView {
                 }
                 if full { self.awaitingFullFrame = nil }
                 self.isRendererPresented = false
+                dump(full ? "applied full" : "applied")
                 ghostty_surface_draw(surface)
-
-
             }
         }
 

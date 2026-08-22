@@ -21,7 +21,7 @@ final class HerdrEventStream {
 
     private static let subscribeRequest: [UInt8] = {
         let request: [String: Any] = [
-            "id": "herdr-mirror:events",
+            "id": "hertty:events",
             "method": "events.subscribe",
             "params": [
                 "subscriptions": [

@@ -84,6 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         keepAliveDelegate = self
         NSApp.setActivationPolicy(.regular)
+        NSApp.applicationIconImage = AppIcon.image
+        setupStatusBarItem()
         guard ghostty_init(0, nil) == 0 else {
             let alert = NSAlert(); alert.messageText = "ghostty_init failed"; alert.runModal()
             NSApp.terminate(nil); return
@@ -114,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        window.title = "Herdr Mirror"
+        window.title = "hertty"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.appearance = NSAppearance(named: Chrome.theme.isDark ? .darkAqua : .aqua)
@@ -182,6 +184,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    // MARK: status bar
+
+    /// Menu-bar item with the hertty template glyph: clicking toggles
+    /// the main window — the reachability hook while agents stream in
+    /// the background.
+    private var statusItem: NSStatusItem?
+    private func setupStatusBarItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = AppIcon.menuBarTemplate
+        item.button?.action = #selector(toggleMainWindow(_:))
+        item.button?.target = self
+        statusItem = item
+    }
+
+    @objc private func toggleMainWindow(_ sender: Any?) {
+        guard let window else { return }
+        if window.isOnActiveSpace, window.isVisible, window.isKeyWindow {
+            window.orderOut(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     // MARK: sessions
 
     private var activeSession: Session? {
@@ -198,11 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch spec.target {
-        case .local:
+        case .local where spec.wantsHerdr:
             append(.herdr(HerdrPageController(
                 spec: spec,
                 apiSocketPath: HerdrAPI.defaultSocketPath,
                 clientSocketPath: HerdrAPI.defaultClientSocketPath)))
+        case .local:
+            append(.terminal(TerminalPageController(spec: spec)))
         case .ssh(let alias) where spec.wantsHerdr:
             let connecting = ConnectingView(spec: spec)
             append(.connecting(connecting))
@@ -273,11 +301,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.activeSession?.focusTerminal()
         }
     }
-
     private func closeSession(at index: Int) {
+
         guard sessions.indices.contains(index) else { return }
-        // Local is pinned — the shell always keeps its primary session.
-        guard sessions[index].spec.target != .local else { return }
+        // Only the default local herdr page is pinned — every other
+        // session (including local Terminal pages) can be closed.
+        let spec = sessions[index].spec
+        guard !(spec.target == .local && spec.wantsHerdr) else { return }
         let specId = sessions[index].spec.id
         sessions[index].shutdown()
         sessions.remove(at: index)
@@ -305,17 +335,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The toolbar button pops the menu itself (anchored to the button,
     // add-workspace reference style); this builds the shared menu.
 
-    /// Local + every ssh-config host, native add-workspace style: flat
-    /// rows with theme-tinted icons; ⌥ swaps a host to terminal-only.
+    /// Terminal + every ssh-config host, native add-workspace style:
+    /// flat rows with theme-tinted icons; ⌥ swaps a host to terminal-only.
     /// Shared by the toolbar button popup and the menu-bar Servers item.
     private func buildServersMenu() -> NSMenu {
         let menu = NSMenu()
-        let local = NSMenuItem(
-            title: "Local herdr", action: #selector(menuOpenServer(_:)), keyEquivalent: "")
-        local.target = self
-        local.representedObject = ["id": "local"]
-        local.image = menuItemIcon("desktopcomputer")
-        menu.addItem(local)
+        let terminal = NSMenuItem(
+            title: "Terminal", action: #selector(menuOpenServer(_:)), keyEquivalent: "")
+        terminal.target = self
+        terminal.representedObject = ["id": "terminal"]
+        terminal.image = menuItemIcon("plus")
+        menu.addItem(terminal)
         menu.addItem(.separator())
 
         for alias in SSHConfig.hostAliases() {
@@ -349,8 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func menuOpenServer(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? [String: Any] else { return }
-        if info["id"] as? String == "local" {
-            openSession(SessionSpec(target: .local, wantsHerdr: true))
+        if info["id"] as? String == "terminal" {
+            openSession(SessionSpec(target: .local, wantsHerdr: false))
             return
         }
         guard let alias = info["alias"] as? String,
@@ -363,9 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMainMenu() {
         let mainMenu = NSMenu()
-        let appItem = NSMenuItem(title: "Herdr Mirror", action: nil, keyEquivalent: "")
+        let appItem = NSMenuItem(title: "hertty", action: nil, keyEquivalent: "")
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Quit Herdr Mirror",
+        appMenu.addItem(withTitle: "Quit hertty",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
@@ -394,9 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func menuCloseSession() {
-        // Local is pinned; the item is validated disabled when active.
+        // The default local herdr page is pinned; the item is validated
+        // disabled when it is active.
         guard let session = activeSession,
-              session.spec.target != .local,
+              !(session.spec.target == .local && session.spec.wantsHerdr),
               let index = sessions.firstIndex(where: { $0.spec.id == session.spec.id })
         else { return }
         closeSession(at: index)
@@ -404,7 +435,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(menuCloseSession) {
-            return activeSession?.spec.target != .local
+            guard let session = activeSession else { return true }
+            return !(session.spec.target == .local && session.spec.wantsHerdr)
         }
         return true
     }

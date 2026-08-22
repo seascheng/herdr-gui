@@ -52,6 +52,19 @@ struct ChromeTheme {
                : blend(background, with: NSColor.black, fraction: 0.05)
     }
 
+    /// The herdr tab bar band: one step beyond the sidebar surface, so
+    /// the row reads as its own bar with the capsule tabs on top of it.
+    var tabBarBackground: NSColor {
+        isDark ? blend(background, with: NSColor.white, fraction: 0.08)
+               : blend(background, with: NSColor.black, fraction: 0.08)
+    }
+
+    /// Resting outline for round chrome controls (the tab strip '+'):
+    /// a quiet ring, no fill until pressed.
+    var controlOutline: NSColor {
+        isDark ? NSColor.white.withAlphaComponent(0.25) : NSColor.black.withAlphaComponent(0.20)
+    }
+
     var hairline: NSColor {
         NSColor.black.withAlphaComponent(isDark ? 0.35 : 0.12)
     }
@@ -75,10 +88,17 @@ struct ChromeTheme {
         isDark ? NSColor.white.withAlphaComponent(0.10) : NSColor.black.withAlphaComponent(0.08)
     }
 
-    /// Tab hover wash: strictly one step below the selection pill so the
-    /// hierarchy reads idle < hover < selected in every theme. (hoverFill
-    /// is a strong contrast lift — right for small icon buttons, too
-    /// heavy for full-width tab segments.)
+    /// Capsule-tab hover fill (herdr's inner tab strip): one step below
+    /// the selection pill — idle is transparent on the tray, selected
+    /// is `selectionPill`.
+    var tabHoverFill: NSColor {
+        isDark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.055)
+    }
+
+    /// Quiet-form tab hover wash (session-bar pills): strictly one step
+    /// below the selection pill so the hierarchy reads idle < hover <
+    /// selected in every theme. (hoverFill is a strong contrast lift —
+    /// right for small icon buttons, too heavy for full-width segments.)
     var hoverPill: NSColor {
         isDark ? NSColor.white.withAlphaComponent(0.05) : NSColor.black.withAlphaComponent(0.04)
     }

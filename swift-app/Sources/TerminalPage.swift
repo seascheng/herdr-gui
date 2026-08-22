@@ -1,11 +1,13 @@
 import Cocoa
 import GhosttyKit
 
-// MARK: - terminal page (plain ssh surface)
+// MARK: - terminal page (plain shell surface)
 
-/// A bare ghostty surface running `ssh <alias>` (EXEC io mode) — the
-/// "no herdr" servers-menu choice. Full bleed, own scroll view, session
-/// lives in the ssh child process for as long as this page exists.
+/// A bare ghostty surface (EXEC io mode): `ssh <alias>` for the
+/// "no herdr" servers-menu choice, or the user's local shell (nil
+/// command → default login shell) for the menu's "Terminal" entry.
+/// Full bleed, own scroll view; the child process lives as long as
+/// this page exists.
 final class TerminalPageController {
     let view = NSView(frame: .zero)
     let spec: SessionSpec
@@ -18,12 +20,11 @@ final class TerminalPageController {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.wantsLayer = true
 
-        guard case .ssh(let alias) = spec.target else { return }
-
         var config = Ghostty.SurfaceConfiguration()
-        config.command = "ssh \(alias)"
+        if case .ssh(let alias) = spec.target {
+            config.command = "ssh \(alias)"
+        }
         config.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
-
         let surface = Ghostty.SurfaceView(
             AppDelegate.ghosttyApp(), baseConfig: config)
         surfaceView = surface
@@ -49,8 +50,8 @@ final class TerminalPageController {
     }
 
     func shutdown() {
-        // The surface's child (ssh) exits with the surface; tearing the
-        // view out of the window releases libghostty's resources.
+        // The surface's child (ssh / shell) exits with the surface; tearing
+        // the view out of the window releases libghostty's resources.
         scrollView?.removeFromSuperview()
         surfaceView?.removeFromSuperview()
         surfaceView = nil

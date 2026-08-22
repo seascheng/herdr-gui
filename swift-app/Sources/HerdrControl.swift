@@ -5,7 +5,7 @@ import os
 // MARK: - unified logger (vendored Ghostty embed calls HerdrLog too)
 
 enum HerdrLog {
-    private static let logger = Logger(subsystem: "com.herdr.mirror", category: "herdr")
+    private static let logger = Logger(subsystem: "com.hertty", category: "app")
     static func error(_ message: String) { logger.error("\(message, privacy: .public)") }
     static func warning(_ message: String) { logger.warning("\(message, privacy: .public)") }
     static func info(_ message: String) { logger.info("\(message, privacy: .public)") }
@@ -29,7 +29,7 @@ final class HerdrAPI {
         guard let fd = UnixSocket.connect(path: socketPath) else { return nil }
         defer { Darwin.close(fd) }
 
-        let request: [String: Any] = ["id": "herdr-mirror", "method": method, "params": params]
+        let request: [String: Any] = ["id": "hertty", "method": method, "params": params]
         guard var data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
         data.append(0x0A)
         guard UnixSocket.writeAll(fd: fd, data: data),
@@ -42,6 +42,15 @@ final class HerdrAPI {
 
     func snapshot() -> [String: Any]? {
         call("session.snapshot", [:])?["snapshot"] as? [String: Any]
+    }
+
+    /// Creates a tab in the focused workspace and returns its id.
+    /// focus: true has herdr switch to the new tab server-side — with
+    /// focus: false the old tab stays focused.
+    func createTab(focus: Bool) -> String? {
+        guard let tab = call("tab.create", ["focus": focus])?["tab"] as? [String: Any]
+        else { return nil }
+        return tab["tab_id"] as? String
     }
 
     func focusTab(_ tabId: String) {

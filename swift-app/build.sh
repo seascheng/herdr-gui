@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build the native Herdr client against the vendored libghostty embedding API.
+# Build hertty — the native macOS client for herdr servers — against
+# the vendored libghostty embedding API.
 
 set -e
 cd "$(dirname "$0")"
@@ -10,6 +11,13 @@ if command -v python3 >/dev/null 2>&1 && \
    ( [ ! -f Sources/AgentIcons.swift ] || \
      [ -n "$(find Assets/AgentIcons -name '*.png' -newer Sources/AgentIcons.swift -print -quit 2>/dev/null)" ] ); then
     python3 tools/gen_agent_icons.py
+fi
+
+# App icon + menu-bar template are generated from Assets/AppIcon/*.png.
+if command -v python3 >/dev/null 2>&1 && \
+   ( [ ! -f Sources/AppIcon.swift ] || \
+     [ -n "$(find Assets/AppIcon -name '*.png' -newer Sources/AppIcon.swift -print -quit 2>/dev/null)" ] ); then
+    python3 tools/gen_app_icon.py
 fi
 
 MAPFILE=CGhostty/include/module.modulemap
@@ -79,6 +87,5 @@ swiftc \
     -framework Metal -framework MetalKit -framework CoreVideo \
     -framework QuartzCore -framework UserNotifications \
     -framework UniformTypeIdentifiers -framework ServiceManagement \
-    -o herdr-mirror
-
-echo "built: $(pwd)/herdr-mirror"
+    -o hertty
+echo "built: $(pwd)/hertty"

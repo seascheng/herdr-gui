@@ -137,10 +137,7 @@ final class HerdrPageController {
         tabStrip.onRenameTab = { [weak self] tabId, name in
             self?.api.renameTab(tabId, to: name)
         }
-        tabStrip.onNewTab = { [weak self] in
-            _ = self?.api.call("tab.create", [:])
-            self?.reconcileNow()
-        }
+        tabStrip.onNewTab = { [weak self] in self?.newTab() }
     }
 
     private func startStreams() {
@@ -189,7 +186,17 @@ final class HerdrPageController {
 
     // MARK: menu actions
 
-    func menuNewTab() { _ = api.call("tab.create", [:]) }
+    /// herdr performs creation and focus atomically; keep the socket round trip
+    /// off the main thread so shell startup cannot freeze native chrome.
+    private func newTab() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            _ = self.api.createTab(focus: true)
+            DispatchQueue.main.async { self.reconcileNow() }
+        }
+    }
+
+    func menuNewTab() { newTab() }
     func menuCloseTab() { api.closeTab(focusedTabId) }
 
     // MARK: reconcile (native chrome only; content comes from the stream)
