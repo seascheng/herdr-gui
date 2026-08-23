@@ -526,13 +526,13 @@ final class SidebarView: NSView {
         needsDisplay = true
     }
 
-    private func rebuildRail(workspaces: [HerdrModel.WorkspaceRef], focusedWorkspaceId: String?) {
+    private func rebuildRail(workspaces: [SidebarWorkspaceModel], focusedWorkspaceId: String?) {
         rail.arrangedSubviews.dropFirst(2).forEach { rail.removeView($0) }
         for ws in workspaces {
             let dot = RailWorkspaceDot { [weak self] in
                 self?.onWorkspaceSelected?(ws.id)
             }
-            dot.configure(status: ws.agentStatus, selected: ws.id == focusedWorkspaceId)
+            dot.configure(status: ws.status, selected: ws.id == focusedWorkspaceId)
             rail.addArrangedSubview(dot)
             dot.widthAnchor.constraint(equalToConstant: 26).isActive = true
         }
@@ -554,11 +554,11 @@ final class SidebarView: NSView {
 
     /// Rebuilds both sections from the snapshot model. The fingerprint
     /// guard keeps no-op snapshots (2s fallback poll) from churning rows.
-    func render(workspaces: [HerdrModel.WorkspaceRef], focusedWorkspaceId: String?,
-                agents: [HerdrModel.AgentRef], focusedTabId: String?) {
-        let wsPart = workspaces.map { "\($0.id)|\($0.label)|\($0.tabCount)|\($0.agentStatus)" }
+    func render(workspaces: [SidebarWorkspaceModel], focusedWorkspaceId: String?,
+                agents: [SidebarAgentModel], focusedTabId: String?) {
+        let wsPart = workspaces.map { "\($0.id)|\($0.label)|\($0.tabCount)|\($0.status)" }
             .joined(separator: "\u{1}")
-        let agentPart = agents.map { "\($0.name)|\($0.status)|\($0.kind)|\($0.tabId)" }
+        let agentPart = agents.map { "\($0.name)|\($0.status)|\($0.iconKind)|\($0.tabId)" }
             .joined(separator: "\u{1}")
         let state = wsPart + "\u{0}" + (focusedWorkspaceId ?? "") + "\u{0}"
             + (focusedTabId ?? "") + "\u{0}" + agentPart
@@ -568,7 +568,7 @@ final class SidebarView: NSView {
 
         wsStack.arrangedSubviews.forEach { wsStack.removeView($0) }
         for ws in workspaces {
-            let status = ws.agentStatus
+            let status = ws.status
             addRow(wsStack) {
                 let row = SidebarRowView { [weak self] in
                     self?.onWorkspaceSelected?(ws.id)
@@ -610,8 +610,8 @@ final class SidebarView: NSView {
                 }
                 row.configure(
                     text: agent.name,
-                    meta: Self.agentContextLine(agent),
-                    icon: AgentIconCatalog.icon(for: agent.kind),
+                    meta: agent.contextLine,
+                    icon: AgentIconCatalog.icon(for: agent.iconKind),
                     status: agent.status,
                     selected: agent.tabId == focusedTabId,
                     menuProvider: { [weak self] in
@@ -624,7 +624,7 @@ final class SidebarView: NSView {
                         menu.addItem(focus)
                         return menu
                     })
-                if let brand = AgentBrandIcons.image(for: agent.kind) {
+                if let brand = AgentBrandIcons.image(for: agent.iconKind) {
                     row.setIconImage(brand)
                 }
                 return row
@@ -637,21 +637,8 @@ final class SidebarView: NSView {
         }
     }
 
-    /// Agent row's second line: the monitoring signal herdr exposes per
-    /// agent (AgentInfo) — a state label if the agent reports one, else
-    /// the terminal title, else the working directory's last component.
-    /// Prefixed with the status word, e.g. "idle · xmind".
-    static func agentContextLine(_ agent: HerdrModel.AgentRef) -> String {
-        func base(_ path: String) -> String {
-            (path as NSString).lastPathComponent
-        }
-        let detail = agent.stateLabel
-            ?? agent.title.map(base)
-            ?? agent.cwd.map(base)
-        let status = agent.status
-        guard let detail, !detail.isEmpty, detail != agent.name else { return status }
-        return "\(status) · \(detail)"
-    }
+    /// Agent row's second line comes precomposed by the page layer
+    /// (status · state label / title / cwd) — the view renders it as-is.
 
     private func dumpLayoutForDiagnostics(rows: Int) {
         if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] != "1" { return }

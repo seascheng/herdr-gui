@@ -335,12 +335,40 @@ final class HerdrPageController {
         let tabs = state.tabsByWorkspace[state.focusedWorkspaceId ?? ""] ?? []
         let focused = state.focusedTabId ?? tabs.first?.tabId ?? ""
         focusedTabId = focused
-        sidebar?.render(workspaces: state.workspaces,
-                        focusedWorkspaceId: state.focusedWorkspaceId,
-                        agents: state.agents,
-                        focusedTabId: state.focusedTabId)
+        sidebar?.render(
+            workspaces: state.workspaces.map(Self.sidebarWorkspace),
+            focusedWorkspaceId: state.focusedWorkspaceId,
+            agents: state.agents.map(Self.sidebarAgent),
+            focusedTabId: state.focusedTabId)
         tabStrip?.render(tabs: tabs.map { (id: $0.tabId, name: $0.label) },
                          selectedId: focused)
+    }
+
+    // MARK: domain → sidebar view models
+
+    private static func sidebarWorkspace(_ ws: HerdrModel.WorkspaceRef)
+        -> SidebarWorkspaceModel {
+        SidebarWorkspaceModel(id: ws.id, label: ws.label,
+                              tabCount: ws.tabCount, status: ws.agentStatus)
+    }
+
+    /// Agent 第二行的合成逻辑（state label → 标题 → cwd 尾段）属于
+    /// 领域解读，留在页面层；Chrome 只拿成品文本。
+    private static func sidebarAgent(_ agent: HerdrModel.AgentRef)
+        -> SidebarAgentModel {
+        func base(_ path: String) -> String {
+            (path as NSString).lastPathComponent
+        }
+        let detail = agent.stateLabel
+            ?? agent.title.map(base)
+            ?? agent.cwd.map(base)
+        var contextLine = agent.status
+        if let detail, !detail.isEmpty, detail != agent.name {
+            contextLine = "\(agent.status) · \(detail)"
+        }
+        return SidebarAgentModel(name: agent.name, status: agent.status,
+                                 iconKind: agent.kind, tabId: agent.tabId,
+                                 contextLine: contextLine)
     }
 
     private func updateChrome(from layout: [String: Any]) {
