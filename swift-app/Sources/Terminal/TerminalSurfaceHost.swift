@@ -38,6 +38,9 @@ final class TerminalSurfaceHost: NSView {
     /// herdr's MouseCapture notice: true while the focused pane app wants
     /// mouse reporting. Gates wheel routing (see TerminalInputRouter).
     private(set) var mouseCaptureActive = true
+    /// Live outer-title pushes from the server (focused pane title when
+    /// the server's window_title template uses {terminal_title}).
+    var onFocusedTitle: ((String?) -> Void)?
     private static let clearLocalTerminal = Array("\u{1B}[3J\u{1B}[2J\u{1B}[H".utf8)
 
     /// herdr's own chrome in app-frame cells: sidebar columns and top tab-bar
@@ -259,6 +262,10 @@ final class TerminalSurfaceHost: NSView {
         stream.onFrameGap = { gaps in
             HerdrLog.error("frame gap: \(gaps) dropped (baseline holds)")
         }
+        stream.onTitle = { [weak self] title in
+            DispatchQueue.main.async { self?.onFocusedTitle?(title) }
+        }
+
 
 
         // First sane grid connects; later changes request a new ANSI baseline.

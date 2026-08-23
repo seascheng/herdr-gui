@@ -23,8 +23,9 @@ enum HerdrModel {
         let workspaceLabel: String?
         /// Monitoring context (AgentInfo): cwd / terminal title / any
         /// state_labels entry — shown as the agent row's second line.
+        /// `title` is var: live server title pushes update it in place.
         let cwd: String?
-        let title: String?
+        var title: String?
         let stateLabel: String?
     }
 
@@ -36,8 +37,8 @@ enum HerdrModel {
         /// its index inside its own workspace, wherever that is.
         let tabsByWorkspace: [String: [TabRef]]
         let workspaces: [WorkspaceRef]
+        var agents: [AgentRef]
         let focusedWorkspaceId: String?
-        let agents: [AgentRef]
     }
 
     static func sidebarState(_ snapshot: [String: Any]) -> SidebarState? {
@@ -97,7 +98,8 @@ enum HerdrModel {
                 workspaceId: (a["workspace_id"] as? String) ?? "",
                 workspaceLabel: workspaceLabels[(a["workspace_id"] as? String) ?? ""],
                 cwd: (a["cwd"] as? String),
-                title: (a["terminal_title_stripped"] as? String),
+                title: (a["terminal_title"] as? String)
+                    ?? (a["terminal_title_stripped"] as? String),
                 stateLabel: stateLabel)
         }
         return SidebarState(
@@ -106,7 +108,7 @@ enum HerdrModel {
             sidebarSplit: split,
             tabsByWorkspace: tabsByWorkspace,
             workspaces: workspaces,
-            focusedWorkspaceId: focusedWs,
-            agents: agents)
+            agents: agents,
+            focusedWorkspaceId: focusedWs)
     }
 }

@@ -36,6 +36,7 @@ protocol MirrorStream: AnyObject {
     var onMouseCapture: ((Bool) -> Void)? { get set }
     var onDisconnect: ((String) -> Void)? { get set }
     var onFrameGap: ((UInt64) -> Void)? { get set }
+    var onTitle: ((String?) -> Void)? { get set }
     var isAttached: Bool { get }
 
     func connectApp(cols: UInt16, rows: UInt16) throws

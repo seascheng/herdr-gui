@@ -31,6 +31,7 @@ final class HerdrAttachSession {
 
     var onFrame: ((MirrorFrame) -> Void)?
     var onMouseCapture: ((Bool) -> Void)?
+    var onTitle: ((String?) -> Void)?
     var onDisconnect: ((String) -> Void)?
     var onFrameGap: ((UInt64) -> Void)?
     private(set) var isAttached = false
@@ -260,6 +261,8 @@ extension HerdrAttachSession: MirrorStream {
         case let .terminalFrame(sequence, width, height, full, bytes):
             onFrame?(MirrorFrame(sequence: sequence, width: width, height: height,
                                  isFullSnapshot: full, bytes: bytes))
+        case let .windowTitle(title):
+            onTitle?(title)
         case let .mouseCapture(active):
             onMouseCapture?(active)
         default:

@@ -112,36 +112,81 @@ final class SidebarRowView: NSView {
         }
     }
 
-    /// Compact status pill ("Working"): status-colored text on a
-    /// status-tinted wash — the row's strongest per-status signal.
+    /// Compact status badge on a status-tinted wash; the word rides the
+    /// tooltip. Working shows omp's own braille spinner character —
+    /// whatever the title carries, swapped as the title syncs. Other
+    /// states show their SF symbol; working without a braille char
+    /// falls back to the loop glyph.
     final class StatusBadgeView: NSView {
-        static let font = NSFont.systemFont(ofSize: 9, weight: .medium)
+        static let symbolFor: [String: String] = [
+            "working": "arrow.triangle.2.circlepath",
+            "idle": "moon.zzz.fill",
+            "done": "checkmark.circle.fill",
+            "blocked": "hand.raised.fill",
+            "unknown": "questionmark.circle",
+        ]
 
-        var text: String = "" {
+        let iconView = NSImageView()
+        let charField = NSTextField(labelWithString: "")
+        private var wash: NSColor = .systemGray
+
+        override var intrinsicContentSize: NSSize { NSSize(width: 26, height: 16) }
+
+        var status: String = "unknown" { didSet { refresh() } }
+
+        /// Braille spinner straight from the agent title (nil = symbol).
+        var spinnerChar: Character? {
             didSet {
-                invalidateIntrinsicContentSize()
-                needsDisplay = true
+                charField.stringValue = spinnerChar.map(String.init) ?? ""
+                refresh()
             }
         }
-        var color: NSColor = .systemGreen { didSet { needsDisplay = true } }
 
-        override var intrinsicContentSize: NSSize {
-            let size = (text as NSString).size(withAttributes: [.font: Self.font])
-            return NSSize(width: ceil(size.width) + 12, height: ceil(size.height) + 5)
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            iconView.imageScaling = .scaleProportionallyUpOrDown
+            iconView.contentTintColor = .white
+            iconView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(iconView)
+
+            charField.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+            charField.textColor = .white
+            charField.alignment = .center
+            charField.translatesAutoresizingMaskIntoConstraints = false
+            charField.isHidden = true
+            addSubview(charField)
+
+            NSLayoutConstraint.activate([
+                iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
+                iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                iconView.widthAnchor.constraint(equalToConstant: 11),
+                iconView.heightAnchor.constraint(equalToConstant: 11),
+                charField.centerXAnchor.constraint(equalTo: centerXAnchor),
+                charField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not implemented") }
+
+        private func refresh() {
+            wash = Chrome.theme.statusColor(status)
+            toolTip = status
+            let showChar = status == "working" && spinnerChar != nil
+            charField.isHidden = !showChar
+            iconView.isHidden = showChar
+            iconView.image = NSImage(
+                systemSymbolName: Self.symbolFor[status] ?? "questionmark.circle",
+                accessibilityDescription: status)?
+                    .withSymbolConfiguration(
+                        .init(pointSize: 10, weight: .semibold))
+            needsDisplay = true
         }
 
         override func draw(_ dirtyRect: NSRect) {
             let path = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2,
                                     yRadius: bounds.height / 2)
-            color.withAlphaComponent(0.16).setFill()
+            wash.withAlphaComponent(0.22).setFill()
             path.fill()
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            (text as NSString).draw(in: bounds, withAttributes: [
-                .font: Self.font,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph,
-            ])
         }
     }
 
@@ -206,7 +251,7 @@ final class SidebarRowView: NSView {
 
     func configure(text: String, meta: String?, icon symbol: String, status: String,
                    selected: Bool, menuProvider: (() -> NSMenu)? = nil,
-                   badge: String? = nil) {
+                   badge: String? = nil, spinner: Character? = nil) {
         self.menuProvider = menuProvider
         let twoLine = !(meta ?? "").isEmpty
         heightConstraint?.constant = twoLine
@@ -227,11 +272,11 @@ final class SidebarRowView: NSView {
             ? Chrome.theme.selectionPill
             : (badge != nil ? Chrome.theme.statusRowFill(status) : .clear)
         labelField.textColor = selected ? Chrome.theme.foreground : Chrome.theme.secondaryText
-        if let badge {
+        if badge != nil {
             dotView.isHidden = true
             badgeView.isHidden = false
-            badgeView.text = badge.prefix(1).uppercased() + badge.dropFirst()
-            badgeView.color = Chrome.theme.statusColor(status)
+            badgeView.status = status
+            badgeView.spinnerChar = spinner
         } else {
             badgeView.isHidden = true
             dotView.isHidden = false
@@ -563,10 +608,8 @@ final class SidebarView: NSView {
 
     @objc private func settingsAction() { onOpenSettings?() }
     @objc private func keybindsAction() { onOpenKeybinds?() }
-    @objc private func reloadConfigAction() { onReloadConfig?() }
 
-    /// Collapsed = narrow rail (toggle + workspace dots); the width
-    /// constraint itself is owned by the app delegate.
+    @objc private func reloadConfigAction() { onReloadConfig?() }
     func setCollapsed(_ collapsed: Bool) {
         isCollapsed = collapsed
         column.isHidden = collapsed
@@ -608,7 +651,10 @@ final class SidebarView: NSView {
                 agents: [SidebarAgentModel], focusedTabId: String?) {
         let wsPart = workspaces.map { "\($0.id)|\($0.label)|\($0.tabCount)|\($0.status)" }
             .joined(separator: "\u{1}")
-        let agentPart = agents.map { "\($0.name)|\($0.status)|\($0.iconKind)|\($0.tabId)" }
+        let agentPart = agents.map {
+            "\($0.name)|\($0.status)|\($0.iconKind)|\($0.tabId)|\($0.contextLine)"
+                + "|\($0.spinnerChar.map(String.init) ?? "")"
+        }
             .joined(separator: "\u{1}")
         let state = wsPart + "\u{0}" + (focusedWorkspaceId ?? "") + "\u{0}"
             + (focusedTabId ?? "") + "\u{0}" + agentPart
@@ -674,7 +720,8 @@ final class SidebarView: NSView {
                         menu.addItem(focus)
                         return menu
                     },
-                    badge: agent.status)
+                    badge: agent.status,
+                    spinner: agent.spinnerChar)
                 if let brand = AgentBrandIcons.image(for: agent.iconKind) {
                     row.setIconImage(brand)
                 }
@@ -688,9 +735,6 @@ final class SidebarView: NSView {
         }
     }
 
-    /// Agent rows carry a status badge (capitalized word on a status
-    /// wash); the second line is the detail only (page-composed).
-
     private func dumpLayoutForDiagnostics(rows: Int) {
         if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] != "1" { return }
         var out = "SIDEBAR bounds=\(Int(bounds.width))x\(Int(bounds.height))\n"
@@ -701,7 +745,7 @@ final class SidebarView: NSView {
             out += String(repeating: " ", count: depth * 2)
                 + "\(name) [\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))]"
                 + (text.isEmpty ? "" : " '\(text)'") + "\n"
-            if depth < 4 { v.subviews.forEach { dump($0, depth: depth + 1) } }
+            if depth < 7 { v.subviews.forEach { dump($0, depth: depth + 1) } }
         }
         subviews.forEach { dump($0, depth: 1) }
         out += "\n"

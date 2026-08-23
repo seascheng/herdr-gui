@@ -156,6 +156,11 @@ final class HerdrPageController {
         host?.scrollChannel?.onInvalidated = { [weak self] in
             self?.reconcileNow()
         }
+        // Frame-rate title pushes (server window_title template): fold
+        // straight into the focused agent's row — no snapshot round trip.
+        host?.onFocusedTitle = { [weak self] title in
+            self?.applyFocusedTitle(title)
+        }
         events.start()
         eventStream = events
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -347,6 +352,19 @@ final class HerdrPageController {
                          selectedId: focused)
     }
 
+    /// Live title push → focused agent's row (bypasses the snapshot
+    /// cycle entirely; the 2s poll re-syncs the rest).
+    private func applyFocusedTitle(_ title: String?) {
+        guard let title, !title.isEmpty,
+              var state = sidebarState,
+              let focusedTabId = state.focusedTabId,
+              let idx = state.agents.firstIndex(where: { $0.tabId == focusedTabId }),
+              state.agents[idx].title != title
+        else { return }
+        state.agents[idx].title = title
+        applySidebarState(state)
+    }
+
     // MARK: domain → sidebar view models
 
     private static func sidebarWorkspace(_ ws: HerdrModel.WorkspaceRef)
@@ -355,22 +373,28 @@ final class HerdrPageController {
                               tabCount: ws.tabCount, status: ws.agentStatus)
     }
 
-    /// Agent 第二行的详情（state label → 标题 → cwd 尾段）属于领域
-    /// 解读，留在页面层；状态词由 Chrome 的徽章呈现，不再拼进文本。
+    /// Agent 第二行的详情（标题 → state label → cwd 尾段）属于领域
+    /// 解读，留在页面层；原始标题（含 omp 的转圈字符）原样透传。
     private static func sidebarAgent(_ agent: HerdrModel.AgentRef)
         -> SidebarAgentModel {
         func base(_ path: String) -> String {
             (path as NSString).lastPathComponent
         }
-        let detail = agent.stateLabel
-            ?? agent.title.map(base)
-            ?? agent.cwd.map(base)
+        let detail = agent.title ?? agent.stateLabel ?? agent.cwd.map(base)
         let contextLine = (detail ?? "").isEmpty || detail == agent.name
             ? agent.status
             : detail!
-        return SidebarAgentModel(name: agent.name, status: agent.status,
-                                 iconKind: agent.kind, tabId: agent.tabId,
-                                 contextLine: contextLine)
+        return SidebarAgentModel(
+            name: agent.name, status: agent.status,
+            iconKind: agent.kind, tabId: agent.tabId,
+            contextLine: contextLine,
+            spinnerChar: agent.title?.first(where: isBrailleSpinner))
+    }
+
+    /// Braille spinner block (U+2800…U+28FF) — omp writes it into the
+    /// title while working.
+    private static func isBrailleSpinner(_ ch: Character) -> Bool {
+        ch.unicodeScalars.allSatisfy { (0x2800...0x28FF).contains($0.value) }
     }
 
     private func updateChrome(from layout: [String: Any]) {

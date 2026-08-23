@@ -18,6 +18,9 @@ struct SidebarAgentModel {
     let iconKind: String
     /// 该 agent 所在 tab 的 id（点击回调携带）。
     let tabId: String
-    /// 第二行文本：仅详情（状态由徽章独立呈现），页面层合成。
+    /// 第二行文本：详情（原始标题 → state label → cwd），页面层合成。
     let contextLine: String
+    /// omp working 时标题里的盲文转圈字符（⠋⠙⠹…）：徽章原样显示，
+    /// 随标题同步自然替换——无本地动画。
+    let spinnerChar: Character?
 }
