@@ -230,9 +230,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the main window — the reachability hook while agents stream in
     /// the background.
     private var statusItem: NSStatusItem?
+
+    /// Menu-bar glyphs render at ~16-18pt; the source PNG is 32×24 with
+    /// no scaling of its own, so unscaled it overflows the bar. Draw it
+    /// into an 18×13.5 template copy (lockFocus renders at the screen's
+    /// backing scale, so it stays crisp on retina).
+    private static let menuBarIcon: NSImage? = {
+        guard let base = AppIcon.menuBarTemplate else { return nil }
+        let target = NSSize(width: 18, height: 13.5)
+        let scaled = NSImage(size: target)
+        scaled.lockFocus()
+        base.draw(in: NSRect(origin: .zero, size: target))
+        scaled.unlockFocus()
+        scaled.isTemplate = true
+        return scaled
+    }()
+
     private func setupStatusBarItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = AppIcon.menuBarTemplate
+        item.button?.image = Self.menuBarIcon
         item.button?.action = #selector(toggleMainWindow(_:))
         item.button?.target = self
         statusItem = item
