@@ -111,7 +111,8 @@ enum HerdrClientMessage {
     /// full app grid (crossterm semantics) — herdr routes them to pane
     /// focus, divider drags, selection, and its own menus.
     static func inputEventsMouse(kind: UInt32, button: Int,
-                                 column: UInt16, row: UInt16, modifiers: UInt8) -> [UInt8] {
+                                 column: UInt16, row: UInt16,
+                                 modifiers: MirrorKeyModifiers) -> [UInt8] {
         BincodeWriter.withLock {
             BincodeWriter.resetLocked()
             BincodeWriter.writeVariant(7)            // ClientMessage::InputEvents
@@ -123,17 +124,16 @@ enum HerdrClientMessage {
             }
             BincodeWriter.writeVarint(column)
             BincodeWriter.writeVarint(row)
-            BincodeWriter.writeU8(modifiers)
+            BincodeWriter.writeU8(modifiers.rawValue)
             return BincodeFrame.frame(BincodeWriter.bytesLocked())
         }
     }
 
-    /// Structured key presses (InputEvents → Key). modifiers use
-    /// crossterm bits: 0x01 shift, 0x02 ctrl, 0x04 alt. Chords that
-    /// depend on real modifiers (prefix+shift+N, prefix+alt+N) must go
-    /// through here — raw Input bytes cannot carry a shift modifier
-    /// past the terminal's shifted-character mapping.
-    static func inputEventsKeys(_ keys: [(char: Character, modifiers: UInt8)]) -> [UInt8] {
+    /// Structured key presses (InputEvents → Key). Modifier bindings
+    /// (prefix+shift+N, prefix+alt+N) must go through here — raw Input
+    /// bytes cannot carry a shift modifier past the terminal's
+    /// shifted-character mapping.
+    static func inputEventsKeys(_ keys: [MirrorKeyChord]) -> [UInt8] {
         BincodeWriter.withLock {
             BincodeWriter.resetLocked()
             BincodeWriter.writeVariant(7)              // ClientMessage::InputEvents
@@ -143,7 +143,7 @@ enum HerdrClientMessage {
                 BincodeWriter.writeVariant(15)         // ClientKeyCode::Char(char)
                 let scalar = key.char.unicodeScalars.first ?? " "
                 BincodeWriter.writeVarint(UInt32(scalar.value))
-                BincodeWriter.writeU8(key.modifiers)
+                BincodeWriter.writeU8(key.modifiers.rawValue)
                 BincodeWriter.writeVariant(0)          // ClientKeyKind::Press
                 BincodeWriter.writeVarint(UInt16(1))   // repeat_count
                 BincodeWriter.writeVariant(0)          // generated_text: None

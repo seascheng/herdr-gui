@@ -197,15 +197,17 @@ final class TerminalSurfaceHost: NSView {
                 self?.mouseCaptureActive = active
             }
         }
-        stream.onFrame = { [weak self] sequence, width, height, full, bytes in
+        stream.onFrame = { [weak self] frame in
             DispatchQueue.main.async {
                 guard let self,
                       let surface = self.surfaceView?.surface
                 else { return }
                 func dump(_ note: String) {
-                    self.dumpFrame(sequence: sequence, width: width, height: height,
-                                   full: full, byteCount: bytes.count, note: note)
+                    self.dumpFrame(sequence: frame.sequence, width: frame.width,
+                                   height: frame.height, full: frame.isFullSnapshot,
+                                   byteCount: frame.bytes.count, note: note)
                 }
+
 
                 // The crop offset is re-asserted on every frame (early
                 // exit when unchanged): nothing else may own the scroll
@@ -219,7 +221,7 @@ final class TerminalSurfaceHost: NSView {
                     dump("drop no-grid")
                     return
                 }
-                guard width == grid.0, height == grid.1 else {
+                guard frame.width == grid.0, frame.height == grid.1 else {
                     dump("drop grid-mismatch local=\(grid.0)x\(grid.1)")
                     self.requestFullFrame(replacePending: false)
                     return
@@ -227,26 +229,26 @@ final class TerminalSurfaceHost: NSView {
                 let awaitingThisGrid = self.awaitingFullFrame.map {
                     $0.0 == grid.0 && $0.1 == grid.1
                 } ?? false
-                guard !awaitingThisGrid || full else {
+                guard !awaitingThisGrid || frame.isFullSnapshot else {
                     dump("drop awaiting-full")
                     self.requestFullFrame(replacePending: false)
                     return
                 }
-                if full,
+                if frame.isFullSnapshot,
                    !self.prepareForFullFrame(surface: surface, grid: grid) {
                     dump("drop prepare-failed")
                     self.requestFullFrame(replacePending: false)
                     return
                 }
 
-                bytes.withUnsafeBufferPointer { buffer in
+                frame.bytes.withUnsafeBufferPointer { buffer in
                     if let base = buffer.baseAddress {
                         ghostty_surface_process_output(surface, base, UInt(buffer.count))
                     }
                 }
-                if full { self.awaitingFullFrame = nil }
+                if frame.isFullSnapshot { self.awaitingFullFrame = nil }
                 self.lastFrameAppliedAt = Date()
-                dump(full ? "applied full" : "applied")
+                dump(frame.isFullSnapshot ? "applied full" : "applied")
                 ghostty_surface_draw(surface)
             }
         }

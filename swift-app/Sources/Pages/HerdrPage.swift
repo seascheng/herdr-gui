@@ -252,7 +252,7 @@ final class HerdrPageController {
             self?.reconcileNow()
         }
         guard index < 9 else { return }
-        host?.sendPrefixChord(Character(String(index + 1)), 0x04)
+        host?.sendPrefixChord(Character(String(index + 1)), .alternate)
     }
 
     private func focusWorkspace(_ workspaceId: String) {
@@ -280,7 +280,7 @@ final class HerdrPageController {
         guard let wsIndex = state.workspaces.firstIndex(where: { $0.id == workspaceId }),
               wsIndex < 9
         else { return }
-        host?.sendPrefixChord(Character(String(wsIndex + 1)), 0x01)
+        host?.sendPrefixChord(Character(String(wsIndex + 1)), .shift)
         guard let tabId,
               let tabs = state.tabsByWorkspace[workspaceId],
               let index = tabs.firstIndex(where: { $0.tabId == tabId }),

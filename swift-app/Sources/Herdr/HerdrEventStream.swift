@@ -19,12 +19,12 @@ final class HerdrEventStream {
 
     /// Event name → called on the main queue.
     var onEvent: ((String) -> Void)?
-    /// Chrome-relevant subscriptions: every structure event herdr offers.
-    /// pane.updated carries agent_status — the per-pane filtered
-    /// pane.agent_status_changed / output_matched / scroll_changed are
-    /// excluded (they REQUIRE pane_id; a pane_id-less entry makes the
-    /// server reject the whole subscribe, which would quietly demote
-    /// the stream to the 2s poll).
+    /// Chrome-relevant structure events. NOTE: pane.updated does NOT
+    /// carry agent_status — a working→done round fires only
+    /// pane.agent_status_changed, which needs a per-pane pane_id filter
+    /// and is excluded here (a pane_id-less entry makes the server
+    /// reject the whole subscribe). Status display rides the 2s
+    /// snapshot poll.
     private static let subscribeRequest: [UInt8] = {
         let events = [
             "workspace.created", "workspace.updated", "workspace.metadata_updated",

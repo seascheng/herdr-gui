@@ -29,7 +29,7 @@ final class HerdrAttachSession {
     private var pendingInput: [UInt8] = []
     private static let pendingInputLimit = 1 << 16
 
-    var onFrame: ((UInt64, UInt16, UInt16, Bool, [UInt8]) -> Void)?
+    var onFrame: ((MirrorFrame) -> Void)?
     var onMouseCapture: ((Bool) -> Void)?
     var onDisconnect: ((String) -> Void)?
     var onFrameGap: ((UInt64) -> Void)?
@@ -135,7 +135,7 @@ final class HerdrAttachSession {
     /// the same path the TUI CLI uses (pane focus, divider drags,
     /// selection, herdr menus).
     func sendMouseEvent(kind: UInt32, button: Int, column: UInt16, row: UInt16,
-                        modifiers: UInt8) {
+                        modifiers: MirrorKeyModifiers) {
         try? send(raw: HerdrClientMessage.inputEventsMouse(kind: kind, button: button,
                                                            column: column, row: row,
                                                            modifiers: modifiers))
@@ -143,7 +143,7 @@ final class HerdrAttachSession {
 
     /// Structured key presses for modifier-dependent herdr bindings
     /// (switch_workspace prefix+shift+N, focus_agent prefix+alt+N).
-    func sendKeyEvents(_ keys: [(char: Character, modifiers: UInt8)]) {
+    func sendKeyEvents(_ keys: [MirrorKeyChord]) {
         try? send(raw: HerdrClientMessage.inputEventsKeys(keys))
     }
 
@@ -258,7 +258,8 @@ extension HerdrAttachSession: MirrorStream {
     fileprivate func forward(_ msg: HerdrServerMessage) {
         switch msg {
         case let .terminalFrame(sequence, width, height, full, bytes):
-            onFrame?(sequence, width, height, full, bytes)
+            onFrame?(MirrorFrame(sequence: sequence, width: width, height: height,
+                                 isFullSnapshot: full, bytes: bytes))
         case let .mouseCapture(active):
             onMouseCapture?(active)
         default:

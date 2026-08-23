@@ -24,9 +24,11 @@ extension TerminalSurfaceHost {
     /// bindings (prefix+shift+N, prefix+alt+N) only match when the
     /// shift/alt bits survive the trip, which raw Input bytes cannot
     /// express (a shifted-digit byte re-parses as a different action).
-    /// modifiers use crossterm bits: 0x01 shift, 0x02 ctrl, 0x04 alt.
-    func sendPrefixChord(_ char: Character, _ modifiers: UInt8) {
-        stream?.sendKeyEvents([(char: "b", modifiers: 0x02), (char: char, modifiers: modifiers)])
+    func sendPrefixChord(_ char: Character, _ modifiers: MirrorKeyModifiers) {
+        stream?.sendKeyEvents([
+            (char: "b", modifiers: .control),
+            (char: char, modifiers: modifiers),
+        ])
     }
 
     /// Synthetic click on herdr's own sidebar launcher. herdr's sidebar
@@ -40,8 +42,8 @@ extension TerminalSurfaceHost {
         let wsH = min(max(Int((Double(grid.1) * ratio).rounded()), 3), Int(grid.1) - 3)
         let row = UInt16(clamping: wsH - 1)
         let col = UInt16(clamping: Int(chromeSidebarCols) - 3)
-        stream?.sendMouseEvent(kind: 0, button: 0, column: col, row: row, modifiers: 0)
-        stream?.sendMouseEvent(kind: 1, button: 0, column: col, row: row, modifiers: 0)
+        stream?.sendMouseEvent(kind: 0, button: 0, column: col, row: row, modifiers: [])
+        stream?.sendMouseEvent(kind: 1, button: 0, column: col, row: row, modifiers: [])
     }
 
     /// Opens herdr's global menu, then activates an item by keyboard:

@@ -86,11 +86,11 @@ final class TerminalInputRouter {
 
     private func forwardMouse(_ event: NSEvent, kind: UInt32, button: Int) -> NSEvent? {
         guard let cell = host?.gridCell(for: event) else { return event }
-        var modifiers: UInt8 = 0
-        if event.modifierFlags.contains(.shift) { modifiers |= 0x01 }
-        if event.modifierFlags.contains(.control) { modifiers |= 0x02 }
-        if event.modifierFlags.contains(.option) { modifiers |= 0x04 }
-        if event.modifierFlags.contains(.command) { modifiers |= 0x08 }
+        var modifiers: MirrorKeyModifiers = []
+        if event.modifierFlags.contains(.shift) { modifiers.insert(.shift) }
+        if event.modifierFlags.contains(.control) { modifiers.insert(.control) }
+        if event.modifierFlags.contains(.option) { modifiers.insert(.alternate) }
+        if event.modifierFlags.contains(.command) { modifiers.insert(.command) }
         stream?.sendMouseEvent(
             kind: kind,
             button: button,
