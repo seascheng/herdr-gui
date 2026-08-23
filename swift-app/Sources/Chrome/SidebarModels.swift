@@ -18,6 +18,6 @@ struct SidebarAgentModel {
     let iconKind: String
     /// 该 agent 所在 tab 的 id（点击回调携带）。
     let tabId: String
-    /// 已合成的第二行文本（状态 · 详情），视图不再做拼接逻辑。
+    /// 第二行文本：仅详情（状态由徽章独立呈现），页面层合成。
     let contextLine: String
 }

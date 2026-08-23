@@ -211,6 +211,25 @@ struct ChromeTheme {
         }
     }
 
+    /// Icon tint per status: attention states (working/blocked/done)
+    /// tint the row icon; idle/unknown keep the neutral chrome — a
+    /// green tint on every resting agent would erase the distinction.
+    func statusIconTint(_ status: String) -> NSColor? {
+        switch status {
+        case "working", "blocked", "done": return statusColor(status)
+        default: return nil
+        }
+    }
+
+    /// Whole-row wash for attention states, sitting below the
+    /// selection pill in the hierarchy.
+    func statusRowFill(_ status: String) -> NSColor {
+        switch status {
+        case "working": return statusColor(status).withAlphaComponent(0.10)
+        case "blocked": return statusColor(status).withAlphaComponent(0.12)
+        default: return .clear
+        }
+    }
 }
 
 enum Chrome {

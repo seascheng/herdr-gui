@@ -94,6 +94,7 @@ final class SidebarRowView: NSView {
     private let metaField = NSTextField(labelWithString: "")
     private let textStack = NSStackView()
     private let dotView = DotView()
+    private let badgeView = StatusBadgeView()
     private var pillColor: NSColor = .clear
     private var hovered = false
     private var trackedBounds: NSRect = .null
@@ -110,6 +111,40 @@ final class SidebarRowView: NSView {
             NSBezierPath(ovalIn: rect).fill()
         }
     }
+
+    /// Compact status pill ("Working"): status-colored text on a
+    /// status-tinted wash — the row's strongest per-status signal.
+    final class StatusBadgeView: NSView {
+        static let font = NSFont.systemFont(ofSize: 9, weight: .medium)
+
+        var text: String = "" {
+            didSet {
+                invalidateIntrinsicContentSize()
+                needsDisplay = true
+            }
+        }
+        var color: NSColor = .systemGreen { didSet { needsDisplay = true } }
+
+        override var intrinsicContentSize: NSSize {
+            let size = (text as NSString).size(withAttributes: [.font: Self.font])
+            return NSSize(width: ceil(size.width) + 12, height: ceil(size.height) + 5)
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let path = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2,
+                                    yRadius: bounds.height / 2)
+            color.withAlphaComponent(0.16).setFill()
+            path.fill()
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            (text as NSString).draw(in: bounds, withAttributes: [
+                .font: Self.font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph,
+            ])
+        }
+    }
+
 
 
     init(click: @escaping () -> Void) {
@@ -144,6 +179,9 @@ final class SidebarRowView: NSView {
 
         dotView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(dotView)
+        badgeView.setContentHuggingPriority(.required, for: .horizontal)
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badgeView)
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
@@ -157,13 +195,18 @@ final class SidebarRowView: NSView {
             dotView.centerYAnchor.constraint(equalTo: centerYAnchor),
             dotView.widthAnchor.constraint(equalToConstant: 8),
             dotView.heightAnchor.constraint(equalToConstant: 8),
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: badgeView.leadingAnchor, constant: -6),
+            badgeView.leadingAnchor.constraint(greaterThanOrEqualTo: textStack.trailingAnchor, constant: 7),
+            badgeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
+            badgeView.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not implemented") }
 
     func configure(text: String, meta: String?, icon symbol: String, status: String,
-                   selected: Bool, menuProvider: (() -> NSMenu)? = nil) {
+                   selected: Bool, menuProvider: (() -> NSMenu)? = nil,
+                   badge: String? = nil) {
         self.menuProvider = menuProvider
         let twoLine = !(meta ?? "").isEmpty
         heightConstraint?.constant = twoLine
@@ -175,21 +218,28 @@ final class SidebarRowView: NSView {
             .withSymbolConfiguration(cfg)
         iconView.contentTintColor = selected
             ? Chrome.theme.foreground
-            : Chrome.theme.secondaryText.withAlphaComponent(0.8)
+            : (badge != nil ? Chrome.theme.statusIconTint(status) : nil)
+                ?? Chrome.theme.secondaryText.withAlphaComponent(0.8)
 
         labelField.stringValue = text
         labelField.font = .systemFont(ofSize: 12.5, weight: selected ? .semibold : .regular)
-        pillColor = selected ? Chrome.theme.selectionPill : .clear
+        pillColor = selected
+            ? Chrome.theme.selectionPill
+            : (badge != nil ? Chrome.theme.statusRowFill(status) : .clear)
         labelField.textColor = selected ? Chrome.theme.foreground : Chrome.theme.secondaryText
-        dotView.fill = Chrome.theme.statusColor(status)
-        dotView.needsDisplay = true
+        if let badge {
+            dotView.isHidden = true
+            badgeView.isHidden = false
+            badgeView.text = badge.prefix(1).uppercased() + badge.dropFirst()
+            badgeView.color = Chrome.theme.statusColor(status)
+        } else {
+            badgeView.isHidden = true
+            dotView.isHidden = false
+            dotView.fill = Chrome.theme.statusColor(status)
+            dotView.needsDisplay = true
+        }
         needsDisplay = true
     }
-
-    /// Diagnostics-only (HERDR_DUMP_VIEWS layout self-check).
-    func labelWidthForDiagnostics() -> CGFloat { labelField.frame.width }
-
-    /// Brand glyph override (official tool logo) for the SF fallback.
     func setIconImage(_ image: NSImage) {
         iconView.image = image
     }
@@ -623,7 +673,8 @@ final class SidebarView: NSView {
                         focus.representedObject = agent.tabId
                         menu.addItem(focus)
                         return menu
-                    })
+                    },
+                    badge: agent.status)
                 if let brand = AgentBrandIcons.image(for: agent.iconKind) {
                     row.setIconImage(brand)
                 }
@@ -637,8 +688,8 @@ final class SidebarView: NSView {
         }
     }
 
-    /// Agent row's second line comes precomposed by the page layer
-    /// (status · state label / title / cwd) — the view renders it as-is.
+    /// Agent rows carry a status badge (capitalized word on a status
+    /// wash); the second line is the detail only (page-composed).
 
     private func dumpLayoutForDiagnostics(rows: Int) {
         if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] != "1" { return }

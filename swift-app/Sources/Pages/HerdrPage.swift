@@ -355,8 +355,8 @@ final class HerdrPageController {
                               tabCount: ws.tabCount, status: ws.agentStatus)
     }
 
-    /// Agent 第二行的合成逻辑（state label → 标题 → cwd 尾段）属于
-    /// 领域解读，留在页面层；Chrome 只拿成品文本。
+    /// Agent 第二行的详情（state label → 标题 → cwd 尾段）属于领域
+    /// 解读，留在页面层；状态词由 Chrome 的徽章呈现，不再拼进文本。
     private static func sidebarAgent(_ agent: HerdrModel.AgentRef)
         -> SidebarAgentModel {
         func base(_ path: String) -> String {
@@ -365,10 +365,9 @@ final class HerdrPageController {
         let detail = agent.stateLabel
             ?? agent.title.map(base)
             ?? agent.cwd.map(base)
-        var contextLine = agent.status
-        if let detail, !detail.isEmpty, detail != agent.name {
-            contextLine = "\(agent.status) · \(detail)"
-        }
+        let contextLine = (detail ?? "").isEmpty || detail == agent.name
+            ? agent.status
+            : detail!
         return SidebarAgentModel(name: agent.name, status: agent.status,
                                  iconKind: agent.kind, tabId: agent.tabId,
                                  contextLine: contextLine)
