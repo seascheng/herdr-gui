@@ -11,7 +11,7 @@ import Foundation
 extension TerminalSurfaceHost {
     /// Sends raw keys over the attach stream (picker typing, menu arrows).
     func sendKeys(_ keys: String) {
-        session?.sendInput(Array(keys.utf8))
+        stream?.sendInput(Array(keys.utf8))
     }
 
     /// Sends a herdr prefix chord — the documented keybindings path a
@@ -26,7 +26,7 @@ extension TerminalSurfaceHost {
     /// express (a shifted-digit byte re-parses as a different action).
     /// modifiers use crossterm bits: 0x01 shift, 0x02 ctrl, 0x04 alt.
     func sendPrefixChord(_ char: Character, _ modifiers: UInt8) {
-        session?.sendKeyEvents([(char: "b", modifiers: 0x02), (char: char, modifiers: modifiers)])
+        stream?.sendKeyEvents([(char: "b", modifiers: 0x02), (char: char, modifiers: modifiers)])
     }
 
     /// Synthetic click on herdr's own sidebar launcher. herdr's sidebar
@@ -40,8 +40,8 @@ extension TerminalSurfaceHost {
         let wsH = min(max(Int((Double(grid.1) * ratio).rounded()), 3), Int(grid.1) - 3)
         let row = UInt16(clamping: wsH - 1)
         let col = UInt16(clamping: Int(chromeSidebarCols) - 3)
-        session?.sendMouseEvent(kind: 0, button: 0, column: col, row: row, modifiers: 0)
-        session?.sendMouseEvent(kind: 1, button: 0, column: col, row: row, modifiers: 0)
+        stream?.sendMouseEvent(kind: 0, button: 0, column: col, row: row, modifiers: 0)
+        stream?.sendMouseEvent(kind: 1, button: 0, column: col, row: row, modifiers: 0)
     }
 
     /// Opens herdr's global menu, then activates an item by keyboard:
@@ -54,7 +54,7 @@ extension TerminalSurfaceHost {
         clickHerdrLauncher(split: split)
         let bytes = Array(keys.utf8)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.session?.sendInput(bytes)
+            self?.stream?.sendInput(bytes)
         }
     }
 }

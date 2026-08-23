@@ -22,8 +22,8 @@ final class MirrorSurfaceView: Ghostty.SurfaceView {
 final class TerminalSurfaceHost: NSView {
     private var surfaceView: Ghostty.SurfaceView?
     private var scrollView: SurfaceScrollView?
-    var session: HerdrAttachSession?
-    private(set) var scrollChannel: HerdrScrollChannel?
+    var stream: MirrorStream?
+    private(set) var scrollChannel: PaneScrollChannel?
     private var lastGrid: (UInt16, UInt16) = (0, 0)
     private var resizeDebounce: DispatchWorkItem?
     private var awaitingFullFrame: (UInt16, UInt16)?
@@ -148,21 +148,19 @@ final class TerminalSurfaceHost: NSView {
         return lastCellSize
     }
 
-    /// Attaches the mirror surface and its backing connections. The client
-    /// socket path is per-session: the local herdr default, or a local
-    /// endpoint of an SSH streamlocal tunnel for remote servers.
+    /// Attaches the mirror surface. The stream and scroll channel are
+    /// INJECTED — Terminal owns only the abstractions; the page layer
+    /// constructs the concrete herdr connections.
     func attach(app: ghostty_app_t,
-                clientSocketPath: String = NSString(
-                    string: "~/.config/herdr/herdr-client.sock").expandingTildeInPath) {
-        let session = HerdrAttachSession(socketPath: clientSocketPath)
-        self.session = session
-        let channel = HerdrScrollChannel(clientSocketPath: clientSocketPath)
-        self.scrollChannel = channel
+                stream: MirrorStream,
+                scrollChannel: PaneScrollChannel) {
+        self.stream = stream
+        self.scrollChannel = scrollChannel
 
         var config = Ghostty.SurfaceConfiguration()
         config.ioMode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
-        config.onWrite = { [weak session] bytes in
-            session?.sendInput(bytes)
+        config.onWrite = { [weak stream] bytes in
+            stream?.sendInput(bytes)
         }
         config.onRendererActivity = { [weak self] in
             DispatchQueue.main.async { self?.lastRendererPresentedAt = Date() }
@@ -182,26 +180,26 @@ final class TerminalSurfaceHost: NSView {
         scroll.translatesAutoresizingMaskIntoConstraints = true
 
         let inputRouter = TerminalInputRouter(
-            host: self, session: session, scrollChannel: channel)
+            host: self, stream: stream, scrollChannel: scrollChannel)
         inputRouter.start()
         self.inputRouter = inputRouter
         // A resize invalidates Ghostty's local grid. Apply no ANSI diff until
-        // Herdr sends a full snapshot for the current grid.
-        session.onMessage = { [weak self] message in
+        // the stream sends a full snapshot for the current grid.
+        stream.onMouseCapture = { [weak self] active in
             DispatchQueue.main.async {
-                guard let self else { return }
-                if case let .mouseCapture(active) = message {
-                    // True while the focused pane app requests mouse
-                    // reporting (alt-screen TUIs like omp): wheel must
-                    // ride the app input path so the app scrolls itself.
-                    // The AttachScroll channel's server-side scrollback
-                    // viewport renders alt-screen content corrupted
-                    // (verified live: garbled wide-char rows + a 39-frame
-                    // burst after wheel-up on omp).
-                    self.mouseCaptureActive = active
-                    return
-                }
-                guard case let .terminalFrame(sequence, width, height, full, bytes) = message,
+                // True while the focused pane app requests mouse
+                // reporting (alt-screen TUIs like omp): wheel must
+                // ride the app input path so the app scrolls itself.
+                // The AttachScroll channel's server-side scrollback
+                // viewport renders alt-screen content corrupted
+                // (verified live: garbled wide-char rows + a 39-frame
+                // burst after wheel-up on omp).
+                self?.mouseCaptureActive = active
+            }
+        }
+        stream.onFrame = { [weak self] sequence, width, height, full, bytes in
+            DispatchQueue.main.async {
+                guard let self,
                       let surface = self.surfaceView?.surface
                 else { return }
                 func dump(_ note: String) {
@@ -253,12 +251,13 @@ final class TerminalSurfaceHost: NSView {
             }
         }
 
-        session.onDisconnect = { [weak self] _ in
+        stream.onDisconnect = { [weak self] _ in
             DispatchQueue.main.async { self?.scheduleReconnect() }
         }
-        session.onFrameGap = { gaps in
+        stream.onFrameGap = { gaps in
             HerdrLog.error("frame gap: \(gaps) dropped (baseline holds)")
         }
+
 
         // First sane grid connects; later changes request a new ANSI baseline.
         sizeCancellable = view.$surfaceSize.sink { [weak self] size in
@@ -366,7 +365,7 @@ final class TerminalSurfaceHost: NSView {
     func shutdown() {
         inputRouter?.stop()
         inputRouter = nil
-        session?.close()
+        stream?.close()
     }
 
     var keyView: NSView? { surfaceView }
@@ -412,15 +411,15 @@ final class TerminalSurfaceHost: NSView {
         return (UInt16(clamping: size.columns), UInt16(clamping: size.rows))
     }
 
-    // MARK: session lifecycle
+    // MARK: stream lifecycle
 
     private func connect(cols: UInt16, rows: UInt16) {
-        let session = self.session
+        let stream = self.stream
         awaitingFullFrame = (cols, rows)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                try session?.connectApp(cols: cols, rows: rows)
+                try stream?.connectApp(cols: cols, rows: rows)
                 DispatchQueue.main.async { self?.reconnectAttempt = 0 }
             } catch {
                 DispatchQueue.main.async { self?.scheduleReconnect() }
@@ -433,7 +432,7 @@ final class TerminalSurfaceHost: NSView {
     /// fall back to the last known grid instead of resetting it — a reset
     /// left the app showing a frozen frame until the next window resize.
     private func scheduleReconnect() {
-        guard let session, !session.isAttached else { return }
+        guard let stream, !stream.isAttached else { return }
         guard reconnectGrid() != nil else { return }
         let delay = min(0.5 * pow(2.0, Double(reconnectAttempt)), 4.0)
         reconnectAttempt += 1
@@ -467,7 +466,7 @@ final class TerminalSurfaceHost: NSView {
             self.resizeDebounce = nil
             guard let latest = self.currentGrid else { return }
             self.awaitingFullFrame = latest
-            self.session?.sendResize(cols: latest.0, rows: latest.1)
+            self.stream?.sendResize(cols: latest.0, rows: latest.1)
         }
         resizeDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)

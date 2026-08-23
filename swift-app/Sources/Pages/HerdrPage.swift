@@ -73,7 +73,10 @@ final class HerdrPageController {
         host.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(host)  // content area only; clipped surface shows
         self.host = host          // just herdr's middle region
-        host.attach(app: AppDelegate.ghosttyApp(), clientSocketPath: clientSocketPath)
+        host.attach(
+            app: AppDelegate.ghosttyApp(),
+            stream: HerdrAttachSession(socketPath: clientSocketPath),
+            scrollChannel: HerdrScrollChannel(clientSocketPath: clientSocketPath))
 
         let sidebarWidth = NSLayoutConstraint(
             item: sidebar, attribute: .width, relatedBy: .equal,

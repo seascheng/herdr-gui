@@ -3,16 +3,16 @@ import Cocoa
 final class TerminalInputRouter {
     private weak var host: TerminalSurfaceHost?
 
-    private weak var session: HerdrAttachSession?
-    private unowned let scrollChannel: HerdrScrollChannel
+    private weak var stream: MirrorStream?
+    private unowned let scrollChannel: PaneScrollChannel
     private var wheelMonitor: Any?
     private var mouseMonitors: [Any] = []
     private var wheelRemainder = 0.0
 
-    init(host: TerminalSurfaceHost, session: HerdrAttachSession,
-         scrollChannel: HerdrScrollChannel) {
+    init(host: TerminalSurfaceHost, stream: MirrorStream,
+         scrollChannel: PaneScrollChannel) {
         self.host = host
-        self.session = session
+        self.stream = stream
         self.scrollChannel = scrollChannel
     }
 
@@ -74,7 +74,7 @@ final class TerminalInputRouter {
                 row: UInt16(clamping: Int(cell.y - pane.minY))
             )
         } else {
-            session?.sendWheelScroll(
+            stream?.sendWheelScroll(
                 up: delta > 0,
                 count: lines,
                 column: UInt16(clamping: Int(cell.x)),
@@ -91,7 +91,7 @@ final class TerminalInputRouter {
         if event.modifierFlags.contains(.control) { modifiers |= 0x02 }
         if event.modifierFlags.contains(.option) { modifiers |= 0x04 }
         if event.modifierFlags.contains(.command) { modifiers |= 0x08 }
-        session?.sendMouseEvent(
+        stream?.sendMouseEvent(
             kind: kind,
             button: button,
             column: UInt16(clamping: Int(cell.x)),

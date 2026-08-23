@@ -222,3 +222,5 @@ final class HerdrScrollChannel {
         UnixSocket.writeAll(fd: fd, bytes: bytes)
     }
 }
+
+extension HerdrScrollChannel: PaneScrollChannel {}

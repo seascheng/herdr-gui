@@ -29,7 +29,8 @@ final class HerdrAttachSession {
     private var pendingInput: [UInt8] = []
     private static let pendingInputLimit = 1 << 16
 
-    var onMessage: ((HerdrServerMessage) -> Void)?
+    var onFrame: ((UInt64, UInt16, UInt16, Bool, [UInt8]) -> Void)?
+    var onMouseCapture: ((Bool) -> Void)?
     var onDisconnect: ((String) -> Void)?
     var onFrameGap: ((UInt64) -> Void)?
     private(set) var isAttached = false
@@ -183,12 +184,11 @@ final class HerdrAttachSession {
                 if case .shutdown = msg {
                     queue.sync { if gen == generation { isAttached = false } }
                     guard queue.sync(execute: { gen == generation }) else { return }
-                    onMessage?(msg)
                     onDisconnect?("shutdown")
                     return
                 }
                 guard queue.sync(execute: { gen == generation }) else { return }
-                onMessage?(msg)
+                forward(msg)
             } catch {
                 queue.sync { if gen == generation { isAttached = false } }
                 guard queue.sync(execute: { gen == generation }) else { return }
@@ -244,6 +244,25 @@ final class HerdrAttachSession {
             }
             if n <= 0 { throw HerdrWireError.closed }
             got += n
+        }
+    }
+}
+
+/// 语义回调适配：协议消息在此降解为 MirrorStream 的形状，
+/// Terminal 层不再看见 HerdrServerMessage。
+extension HerdrAttachSession: MirrorStream {
+    func sendResize(cols: UInt16, rows: UInt16) {
+        sendResize(cols: cols, rows: rows, cellW: 0, cellH: 0)
+    }
+
+    fileprivate func forward(_ msg: HerdrServerMessage) {
+        switch msg {
+        case let .terminalFrame(sequence, width, height, full, bytes):
+            onFrame?(sequence, width, height, full, bytes)
+        case let .mouseCapture(active):
+            onMouseCapture?(active)
+        default:
+            break
         }
     }
 }
