@@ -292,8 +292,12 @@ final class TabStripView: NSView {
         stack.distribution = .fillEqually
         stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
+        // No required hugging: the stack must fill the clip view (width ≥
+        // contentView below); a required hug fights that at the same
+        // priority whenever the strip is wider than its content — a
+        // required-vs-required conflict. Tabs share the row width via
+        // .fillEqually plus the segments' defaultLow hug.
         stack.setContentCompressionResistancePriority(.required, for: .horizontal)
-        stack.setContentHuggingPriority(.required, for: .horizontal)
 
         tabScroll.drawsBackground = true
         tabScroll.backgroundColor = Chrome.theme.tabBarBackground

@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 832))
-        let window = NSWindow(
+        let window = StableWindow(
             contentRect: content.bounds,
             // fullSizeContentView must be present at init: inserting it
             // later leaves the native titlebar band in place (black
@@ -160,32 +160,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.appearance = NSAppearance(named: Chrome.theme.isDark ? .darkAqua : .aqua)
+        // Page swaps (remove old view → add new one) expose the window
+        // backing for a frame or two before the new page and the Metal
+        // surface paint; both backing layers are the theme background
+        // so the gap never flashes black.
+        window.backgroundColor = Chrome.theme.background
         window.contentView = content
+        content.wantsLayer = true
+        content.layer?.backgroundColor = Chrome.theme.background.cgColor
+        window.contentMinSize = NSSize(width: 640, height: 400)
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
 
         // Session bar spans the titlebar zone; pages live below it.
-        let bar = SessionBarView(frame: .zero)
-        bar.translatesAutoresizingMaskIntoConstraints = false
+        // Both are mask-sized on purpose: with constraint ties to the
+        // content view, every page mount/swap lets AppKit's layout
+        // engine re-derive the WINDOW frame from the content fitting
+        // size — a fresh page fits at 232×58 (sidebar + strip) or even
+        // 0×30 (loading page), and the window collapses to it
+        // (contentMinSize is ignored on that private path). Mask sizing
+        // severs the constraint path to the window; pages lay out their
+        // own constraints inside the fixed container.
+        let barHeight: CGFloat = 30
+        let bar = SessionBarView(frame: NSRect(
+            x: 0, y: content.bounds.height - barHeight,
+            width: content.bounds.width, height: barHeight))
+        bar.autoresizingMask = [.width, .minYMargin]
         content.addSubview(bar)
         self.sessionBar = bar
 
-        let pages = NSView(frame: .zero)
-        pages.translatesAutoresizingMaskIntoConstraints = false
+        let pages = NSView(frame: NSRect(
+            x: 0, y: 0,
+            width: content.bounds.width,
+            height: content.bounds.height - barHeight))
+        pages.autoresizingMask = [.width, .height]
         content.addSubview(pages)
         self.pageContainer = pages
-
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            bar.topAnchor.constraint(equalTo: content.topAnchor),
-            bar.heightAnchor.constraint(equalToConstant: 30),
-            pages.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            pages.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            pages.topAnchor.constraint(equalTo: bar.bottomAnchor),
-            pages.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-        ])
 
         bar.onSessionSelected = { [weak self] index in
             self?.activate(index)
@@ -201,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The default first session: local herdr, as before.
         openSession(SessionSpec(target: .local, wantsHerdr: true))
+
 
         focusMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
@@ -515,26 +527,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuItemValidation {}
 
-// MARK: - connecting placeholder page
+// MARK: - main window
 
-/// Shown while an ssh herdr tunnel dials: a quiet label so the session
-/// tab exists (and can be closed) before the endpoints come up.
+/// NSWindow whose frame only moves by user action. AppKit's constraint
+/// engine can otherwise take over the frame (`_changeWindowFrameFrom-
+/// ConstraintsIfNecessary` → `_setFrameCommon`) and collapse the window
+/// to the content's fitting size: mounting a page whose chrome fits at
+/// sidebar+strip (232×58) — or a loading page at 0×30 — resized a
+/// 1280×832 window to exactly that, on every page swap. That path also
+/// ignores contentMinSize. Overriding the (private, long-stable)
+/// selector to a no-op keeps the engine from touching the frame at all;
+/// user drags still work and contentMinSize still bounds them.
+final class StableWindow: NSWindow {
+    @objc func _changeWindowFrameFromConstraintsIfNecessary() {
+        // Deliberate no-op: this window is never constraint-driven.
+    }
+}
+
+// MARK: - connecting placeholder page
+/// Loading status page while an ssh herdr tunnel dials (herdr-gui's
+/// ServerStatusView rhythm): antenna glyph, title, sub-copy, spinner.
+/// Keeps the session tab alive (and closable) before endpoints are up.
 final class ConnectingView: NSView {
     let spec: SessionSpec
-    private let label = NSTextField(labelWithString: "")
+    private let spinner = NSProgressIndicator()
 
     init(spec: SessionSpec) {
         self.spec = spec
         super.init(frame: .zero)
         wantsLayer = true
-        label.stringValue = "Connecting to \(spec.label)…"
-        label.font = .systemFont(ofSize: 13)
-        label.textColor = Chrome.theme.secondaryText
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+
+        let icon = NSImageView(image: NSImage(
+            systemSymbolName: "antenna.radiowaves.left.and.right",
+            accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = Chrome.theme.secondaryText
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = NSTextField(labelWithString: "Connecting to \"\(spec.label)\"…")
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.textColor = Chrome.theme.foreground
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let sub = NSTextField(labelWithString: "Forwarding the server's herdr sockets over SSH.")
+        sub.font = .systemFont(ofSize: 12)
+        sub.textColor = Chrome.theme.secondaryText
+        sub.translatesAutoresizingMaskIntoConstraints = false
+
+        spinner.style = .spinning
+        spinner.controlSize = .regular
+        spinner.startAnimation(nil)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+
+        // Edge-anchored like every other page (centered column inside a
+        // pinned container), so the page has a well-determined layout
+        // instead of floating content that fits at 0×0.
+        let column = NSView(frame: .zero)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
+        column.addSubview(icon)
+        column.addSubview(title)
+        column.addSubview(sub)
+        column.addSubview(spinner)
+
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor),
+            column.topAnchor.constraint(equalTo: topAnchor),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor),
+            icon.centerXAnchor.constraint(equalTo: column.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: column.centerYAnchor, constant: -45),
+            icon.widthAnchor.constraint(equalToConstant: 40),
+            icon.heightAnchor.constraint(equalToConstant: 40),
+            title.centerXAnchor.constraint(equalTo: column.centerXAnchor),
+            title.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12),
+            sub.centerXAnchor.constraint(equalTo: column.centerXAnchor),
+            sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
+            spinner.centerXAnchor.constraint(equalTo: column.centerXAnchor),
+            spinner.topAnchor.constraint(equalTo: sub.bottomAnchor, constant: 18),
         ])
     }
 
