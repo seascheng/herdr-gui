@@ -1,6 +1,7 @@
-# Local build output and vendored dylibs.
+# Local build output and scratch dirs.
 swift-app/herdr-mirror
 swift-app/herdr-gui
 .DS_Store
 *.log
 tmp/
+dist/
