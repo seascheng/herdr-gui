@@ -54,14 +54,14 @@ final class HerdrPageController {
         self.tabStrip = tabStrip
 
         sidebar.onReloadConfig = { [weak self] in
-            _ = self?.api.call("server.reload_config", [:])
+            self?.reloadConfig()
         }
         sidebar.onOpenSettings = { [weak self] in
             guard let self else { return }
             if self.settingsPanel == nil {
                 self.settingsPanel = SettingsPanelController(
                     spec: self.spec,
-                    reload: { _ = self.api.call("server.reload_config", [:]) })
+                    reload: { [weak self] in self?.reloadConfig() })
             }
             self.settingsPanel?.show(parent: self.view.window)
         }
@@ -186,6 +186,30 @@ final class HerdrPageController {
         host?.shutdown()
         host?.scrollChannel?.shutdown()
         host?.removeFromSuperview()
+    }
+    // MARK: config actions
+
+    /// Reload Config — the same server.reload_config the sidebar
+    /// fires, fire-and-forget so chrome never waits on the server.
+    func reloadConfig() {
+        api.perform("server.reload_config", [:])
+    }
+
+    /// Open Config File — local config.toml in the default editor,
+    /// created empty when missing (herdr accepts an empty config; the
+    /// Settings panel writes the same file). Remote servers keep
+    /// their config on the host — the menu item validates disabled.
+    func openConfig() {
+        guard case .local = spec.target else { return }
+        let path = HerdrConfigStore.localPath
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: path) {
+            try? fm.createDirectory(
+                atPath: (path as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: nil)
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     // MARK: menu actions

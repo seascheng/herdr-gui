@@ -152,7 +152,7 @@ final class SSHTunnel {
     private var process: Process?
     private var readyPoller: Timer?
     private let dir = NSTemporaryDirectory()
-        + "hertty-\(UUID().uuidString.prefix(8))"
+        + "herdr-gui-\(UUID().uuidString.prefix(8))"
 
     var onError: ((Error) -> Void)?
 

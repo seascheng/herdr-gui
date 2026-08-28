@@ -34,7 +34,7 @@ final class HerdrAPI {
                        socklen_t(MemoryLayout<timeval>.size))
         }
 
-        let request: [String: Any] = ["id": "hertty", "method": method, "params": params]
+        let request: [String: Any] = ["id": "herdr-gui", "method": method, "params": params]
         guard var data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
         data.append(0x0A)
         guard UnixSocket.writeAll(fd: fd, data: data),

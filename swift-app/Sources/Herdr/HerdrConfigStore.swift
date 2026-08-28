@@ -7,19 +7,19 @@ import Foundation
 /// server's live reload after a write (the TUI's write-then-reload flow).
 final class HerdrConfigStore {
     static let remotePath = "~/.config/herdr/config.toml"
+    /// Local config.toml — the file the Settings panel writes and the
+    /// menu bar's Open Config File opens.
+    static let localPath = NSString(
+        string: "~/.config/herdr/config.toml").expandingTildeInPath
     private let alias: String?  // nil = local
 
     init(target: SessionSpec.Target) {
         if case .ssh(let alias) = target { self.alias = alias } else { self.alias = nil }
     }
 
-    private var localPath: String {
-        NSString(string: "~/.config/herdr/config.toml").expandingTildeInPath
-    }
-
     func read(completion: @escaping (String?) -> Void) {
         let alias = self.alias
-        let path = localPath
+        let path = Self.localPath
         DispatchQueue.global(qos: .userInitiated).async {
             if let alias {
                 completion(Self.ssh(alias: alias, arguments: ["cat", Self.remotePath]))
@@ -31,7 +31,7 @@ final class HerdrConfigStore {
 
     func write(_ content: String, completion: @escaping (Bool) -> Void) {
         let alias = self.alias
-        let path = localPath
+        let path = Self.localPath
         DispatchQueue.global(qos: .userInitiated).async {
             if let alias {
                 let ok = Self.ssh(

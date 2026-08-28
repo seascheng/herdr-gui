@@ -433,7 +433,7 @@ final class SidebarView: NSView {
     private(set) var isCollapsed = false
     private let column = NSStackView()
     private let rail = NSStackView()
-    private let wordmark = NSTextField(labelWithString: "hertty")
+    private let wordmark = NSTextField(labelWithString: "herdr-gui")
     private let widthHandle = WidthHandle()
     private let launcher = IconButton(frame: .zero)
     private lazy var collapseToggle: IconButton = IconButton.make(
@@ -449,7 +449,7 @@ final class SidebarView: NSView {
     private var renderedState = ""
 
     /// Session target name (Local / ssh alias) shown as the sidebar title.
-    var serverLabel: String = "hertty" {
+    var serverLabel: String = "herdr-gui" {
         didSet { wordmark.stringValue = serverLabel }
     }
 

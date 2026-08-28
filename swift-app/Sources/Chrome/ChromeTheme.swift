@@ -45,7 +45,7 @@ struct ChromeTheme {
         let candidates = [
             ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]
                 .map { $0 + "/themes/\(trimmed)" },
-            home + "/Library/Application Support/hertty/ghostty/themes/\(trimmed)",
+            home + "/Library/Application Support/herdr-gui/ghostty/themes/\(trimmed)",
             home + "/Library/Application Support/com.mitchellh.ghostty/themes/\(trimmed)",
             home + "/.config/ghostty/themes/\(trimmed)",
             "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(trimmed)",
@@ -70,7 +70,7 @@ struct ChromeTheme {
     static func configuredThemeName() -> String? {
         let home = NSHomeDirectory()
         let candidates = [
-            home + "/Library/Application Support/hertty/ghostty/config",
+            home + "/Library/Application Support/herdr-gui/ghostty/config",
             home + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
             home + "/Library/Application Support/com.mitchellh.ghostty/config",
             home + "/.config/ghostty/config",

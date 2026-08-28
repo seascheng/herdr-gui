@@ -87,13 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.applicationIconImage = AppIcon.image
         setupStatusBarItem()
         // Our OWN ghostty home in app support: config + themes copied once
-        // from the user's live Ghostty, then owned by hertty. The env var
+        // from the user's live Ghostty, then owned by herdr-gui. The env var
         // MUST be set before ghostty_init — libghostty captures the
         // resources dir during init. Without it, CLI launches (which
         // inherit GHOSTTY_RESOURCES_DIR from a hosting Ghostty) and
         // Finder launches resolve themes against different roots.
         let ownHome = NSHomeDirectory()
-            + "/Library/Application Support/hertty/ghostty"
+            + "/Library/Application Support/herdr-gui/ghostty"
         let fm = FileManager.default
         try? fm.createDirectory(atPath: ownHome, withIntermediateDirectories: true)
         let liveConfigs = [
@@ -156,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        window.title = "hertty"
+        window.title = "herdr-gui"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.appearance = NSAppearance(named: Chrome.theme.isDark ? .darkAqua : .aqua)
@@ -238,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: status bar
 
-    /// Menu-bar item with the hertty template glyph: clicking toggles
+    /// Menu-bar item with the herdr-gui template glyph: clicking toggles
     /// the main window — the reachability hook while agents stream in
     /// the background.
     private var statusItem: NSStatusItem?
@@ -461,9 +461,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMainMenu() {
         let mainMenu = NSMenu()
-        let appItem = NSMenuItem(title: "hertty", action: nil, keyEquivalent: "")
+        let appItem = NSMenuItem(title: "herdr-gui", action: nil, keyEquivalent: "")
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Quit hertty",
+        appMenu.addItem(withTitle: "Quit herdr-gui",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
@@ -482,6 +482,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         close.keyEquivalentModifierMask = [.command, .shift]
         // Explicit target so validateMenuItem runs on the delegate.
         close.target = self
+        sessionMenu.addItem(.separator())
+        // Config items act on the active herdr server's config: Open
+        // is local-only (remote configs live on the host), Reload
+        // works on any connected herdr page.
+        let openConfig = sessionMenu.addItem(
+            withTitle: "Open Config File",
+            action: #selector(menuOpenConfig), keyEquivalent: "")
+        openConfig.target = self
+        let reloadConfig = sessionMenu.addItem(
+            withTitle: "Reload Config",
+            action: #selector(menuReloadConfig), keyEquivalent: "")
+        reloadConfig.target = self
         sessionItem.submenu = sessionMenu
         mainMenu.addItem(sessionItem)
         NSApp.mainMenu = mainMenu
@@ -501,10 +513,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         closeSession(at: index)
     }
 
+    @objc private func menuOpenConfig() {
+        guard case .herdr(let page)? = activeSession else { return }
+        page.openConfig()
+    }
+
+    @objc private func menuReloadConfig() {
+        guard case .herdr(let page)? = activeSession else { return }
+        page.reloadConfig()
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(menuCloseSession) {
             guard let session = activeSession else { return true }
             return !(session.spec.target == .local && session.spec.wantsHerdr)
+        }
+        if item.action == #selector(menuOpenConfig) {
+            guard case .herdr(let page)? = activeSession else { return false }
+            return page.spec.target == .local
+        }
+        if item.action == #selector(menuReloadConfig) {
+            guard case .herdr = activeSession else { return false }
+            return true
         }
         return true
     }

@@ -5,7 +5,7 @@ import os
 
 /// Unified os.Logger (the vendored Ghostty embed calls HerdrLog too).
 enum HerdrLog {
-    private static let logger = Logger(subsystem: "com.hertty", category: "app")
+    private static let logger = Logger(subsystem: "com.herdr-gui", category: "app")
     static func error(_ message: String) { logger.error("\(message, privacy: .public)") }
     static func warning(_ message: String) { logger.warning("\(message, privacy: .public)") }
     static func info(_ message: String) { logger.info("\(message, privacy: .public)") }

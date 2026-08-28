@@ -37,7 +37,7 @@ final class HerdrEventStream {
             "layout.updated",
         ]
         let request: [String: Any] = [
-            "id": "hertty:events",
+            "id": "herdr-gui:events",
             "method": "events.subscribe",
             "params": ["subscriptions": events.map { ["type": $0] }],
         ]

@@ -1,6 +1,6 @@
 # Local build output and vendored dylibs.
 swift-app/herdr-mirror
-swift-app/hertty
-swift-app/CGhostty/lib/
+swift-app/herdr-gui
 .DS_Store
 *.log
+tmp/

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build hertty — the native macOS client for herdr servers — against
+# Build herdr-gui — the native macOS client for herdr servers — against
 # the vendored libghostty embedding API.
 
 set -e
@@ -88,5 +88,5 @@ swiftc \
     -framework Metal -framework MetalKit -framework CoreVideo \
     -framework QuartzCore -framework UserNotifications \
     -framework UniformTypeIdentifiers -framework ServiceManagement \
-    -o hertty
-echo "built: $(pwd)/hertty"
+    -o herdr-gui
+echo "built: $(pwd)/herdr-gui"
