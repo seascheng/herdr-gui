@@ -499,7 +499,7 @@ enum AttachScrollSource: Equatable {
 
 // MARK: - Surface model
 
-struct CellData: Equatable {
+struct CellData: Equatable, Hashable {
     var symbol: String
     /// Named color 0..=16; indexed 0x010000XX; RGB 0x02RRGGBB (NOT ARGB).
     var fg: UInt32

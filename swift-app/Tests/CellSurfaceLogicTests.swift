@@ -108,6 +108,34 @@ enum CellSurfaceLogicTests {
                                                         col: 0, row: row)
             expectEq(spaceStart.col, 0, "space start")
         }
-        expect(ok1 && ok2 && ok3 && ok4 && ok5, "registration")
+        let ok6 = TestRegistry.add("surface: streaming selection spans") {
+            let spans = CellSurfaceLogic.rowSpans(
+                anchor: (col: 10, row: 2), head: (col: 4, row: 5), x0: 0, x1: 79)
+            expectEq(spans.count, 4, "span count")
+            expectEq(spans[0].row, 2, "first row")
+            expectEq(spans[0].from, 10, "first from")
+            expectEq(spans[0].to, 79, "first to end of line")
+            expectEq(spans[1].from, 0, "middle full")
+            expectEq(spans[1].to, 79, "middle full to")
+            expectEq(spans[3].row, 5, "last row")
+            expectEq(spans[3].from, 0, "last from 0")
+            expectEq(spans[3].to, 4, "last to head col")
+            // Same row: a simple run between the two columns.
+            let single = CellSurfaceLogic.rowSpans(
+                anchor: (col: 30, row: 7), head: (col: 20, row: 7), x0: 0, x1: 79)
+            expectEq(single.count, 1, "single row span")
+            expectEq(single[0].from, 20, "single from")
+            expectEq(single[0].to, 30, "single to")
+            // Backwards drag (head above anchor) normalizes identically.
+            let reverse = CellSurfaceLogic.rowSpans(
+                anchor: (col: 4, row: 5), head: (col: 10, row: 2), x0: 0, x1: 79)
+            expectEq(reverse.first?.to, 79, "reverse same spans")
+            // Pane-constrained bounds clip the spans.
+            let clipped = CellSurfaceLogic.rowSpans(
+                anchor: (col: 1, row: 0), head: (col: 2, row: 2), x0: 1, x1: 38)
+            expectEq(clipped[0].from, 1, "clip from x0")
+            expectEq(clipped[0].to, 38, "clip to x1")
+        }
+        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6, "registration")
     }
 }

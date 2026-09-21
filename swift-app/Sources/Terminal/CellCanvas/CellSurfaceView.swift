@@ -27,17 +27,8 @@ enum CellSurfaceLogic {
         return (Int(x / cellWidth), Int(y / cellHeight))
     }
 
-    /// Centered popup origin, floored, saturating at zero.
-    static func popupOrigin(mainCols: Int, mainRows: Int, popupCols: Int,
-                            popupRows: Int, cellWidth: Double, cellHeight: Double)
-        -> (x: Double, y: Double) {
-        let x = (Double(mainCols - popupCols) * cellWidth / 2).rounded(.down)
-        let y = Double(mainRows - popupRows) * cellHeight / 2
-        return (max(x, 0), max(y, 0))
-    }
-
-    /// Like cellAt, but clamps into the grid: selections that start or end
-    /// in the canvas margin (surface smaller than the view) stay valid.
+    /// Like cellAt, but clamps into the given bounds: selections that start
+    /// or end outside the grid stay valid at its edges.
     static func clampedCell(x: Double, y: Double, cellWidth: Double,
                             cellHeight: Double, cols: Int, rows: Int)
         -> (col: Int, row: Int) {
@@ -70,6 +61,36 @@ enum CellSurfaceLogic {
         return (c, row)
     }
 
+    /// Streaming (character-flow) selection spans between two cells, within
+    /// column bounds `x0...x1`: partial first line, full middle lines,
+    /// partial last line — terminal-standard selection, not a block.
+    static func rowSpans(anchor: (col: Int, row: Int), head: (col: Int, row: Int),
+                         x0: Int, x1: Int) -> [(row: Int, from: Int, to: Int)] {
+        let x0 = max(x0, 0)
+        let x1 = max(x1, x0)
+        let start = anchor.row <= head.row ? anchor : head
+        let end = anchor.row <= head.row ? head : anchor
+        if start.row == end.row {
+            return [(start.row, min(start.col, end.col), max(start.col, end.col))]
+        }
+        var spans: [(row: Int, from: Int, to: Int)] = []
+        spans.append((start.row, max(start.col, x0), x1))
+        for row in (start.row + 1)..<end.row {
+            spans.append((row, x0, x1))
+        }
+        spans.append((end.row, x0, min(end.col, x1)))
+        return spans
+    }
+
+    /// Centered popup origin, floored, saturating at zero.
+    static func popupOrigin(mainCols: Int, mainRows: Int, popupCols: Int,
+                            popupRows: Int, cellWidth: Double, cellHeight: Double)
+        -> (x: Double, y: Double) {
+        let x = (Double(mainCols - popupCols) * cellWidth / 2).rounded(.down)
+        let y = Double(mainRows - popupRows) * cellHeight / 2
+        return (max(x, 0), max(y, 0))
+    }
+
     /// DECSCUSR cursor shapes: 3|4 bottom underline bar, 5|6 left bar,
     /// everything else a full block.
     static func cursorRect(x: UInt16, y: UInt16, shape: UInt8,
@@ -89,10 +110,13 @@ enum CellSurfaceLogic {
 }
 
 // MARK: - CoreText cell canvas
+//
+// Painting model: one CTLine per ROW (not per glyph). Glyph advances are
+// pinned to the cell grid with per-glyph kern, so column alignment, wide
+// cells (skip continuation), and cursor math stay exact while draw calls
+// drop from cells-per-frame to rows-per-frame (~120× fewer). Rows whose
+// cells did not change reuse the cached CTLine and are not marked dirty.
 
-/// Paints the daemon's `PaneSurfaceFrame` cell grid (splits and borders
-/// included — the frame IS the whole tab surface) and routes semantic input
-/// pane-relatively. No terminal emulator: cells in, glyphs out.
 final class CellSurfaceView: NSView, NSTextInputClient {
     var theme = CellTheme.defaults
 
@@ -113,11 +137,13 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     private(set) var cellWidth: Double = 8
     private(set) var cellHeight: Double = 17
 
-    /// Shaped-glyph cache: (fg | style<<24) → symbol → CTLine. Bounded; a
-    /// theme or font change clears it.
-    private var glyphCache: [UInt32: [String: CTLine]] = [:]
-    private var glyphCacheCount = 0
-    private static let glyphCacheLimit = 4096
+    /// Shaped lines keyed by row CONTENT (not index): scrolling moves row
+    /// content between indices, so content addressing keeps the hits.
+    private var rowLines: [[CellData]: CTLine] = [:]
+    /// Previous frame's rows, for dirty-row detection.
+    private var previousRows: [[CellData]] = []
+    /// Natural advance per symbol (for the kern that pins glyphs to cells).
+    private var symbolAdvances: [String: Double] = [:]
 
     private var wheel = WheelAccumulator()
     private var lastReportedSize = ClientSurfaceSize(cols: 0, rows: 0)
@@ -125,13 +151,18 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     private var markedText: String?
     private var hoverLinkURL: String?
 
-    // Selection state (cell coordinates over the whole frame).
+    // Streaming selection, constrained to the pane where it started.
     private var selectionAnchor: (col: Int, row: Int)?
     private var selectionHead: (col: Int, row: Int)?
+    private var selectionBounds: (x0: Int, x1: Int, y0: Int, y1: Int)?
     private var isDraggingSelection = false
     private var mouseDownPane: String?
 
     override var acceptsFirstResponder: Bool { true }
+
+    /// Top-left origin: every grid computation (rows, hit-testing, mouse
+    /// coordinates) is written in terminal top-down space.
+    override var isFlipped: Bool { true }
 
     init() {
         let size = UserDefaults.standard.double(forKey: "cellFontSize")
@@ -151,15 +182,14 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         let ascent = CTFontGetAscent(ctFont)
         let descent = CTFontGetDescent(ctFont)
         cellHeight = Double(ascent + descent).rounded(.up)
-        // Monospace advance of a wide-enough sample.
-        let sample = "M" as CFString
         let attrs: [NSAttributedString.Key: Any] = [.font: font]
         let line = CTLineCreateWithAttributedString(
-            NSAttributedString(string: sample as String, attributes: attrs))
+            NSAttributedString(string: "M", attributes: attrs))
         let width = Double(CTLineGetTypographicBounds(line, nil, nil, nil))
         cellWidth = max(width.rounded(.up), 1)
-        glyphCache.removeAll()
-        glyphCacheCount = 0
+        rowLines.removeAll()
+        previousRows = []
+        symbolAdvances.removeAll()
         scheduleResize()
     }
 
@@ -178,12 +208,38 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             || newSurface.projectionRevision != surface?.projectionRevision
             || newSurface.bootId != surface?.bootId
         else { return }
+        let old = surface
         surface = newSurface
-        needsDisplay = true
+        let frame = newSurface.frame
+        let width = Int(frame.width)
+
+        if old == nil || old!.frame.width != frame.width
+            || old!.frame.height != frame.height || old!.bootId != newSurface.bootId {
+            previousRows = []
+            needsDisplay = true
+        } else if previousRows.count == Int(frame.height) {
+            // Row-level dirty tracking: only changed rows repaint.
+            for row in 0..<Int(frame.height) {
+                let slice = Array(frame.cells[(row * width)..<((row + 1) * width)])
+                if slice == previousRows[row] { continue }
+                setNeedsDisplay(rowRect(row))
+            }
+        } else {
+            needsDisplay = true
+        }
+        previousRows = (0..<Int(frame.height)).map {
+            Array(frame.cells[($0 * width)..<(($0 + 1) * width)])
+        }
+        if rowLines.count > 600 { rowLines.removeAll(keepingCapacity: true) }
         scheduleResize()
         if ProcessInfo.processInfo.environment["HERDR_DUMP_CELLS"] == "1" {
             dumpCells()
         }
+    }
+
+    private func rowRect(_ row: Int) -> NSRect {
+        NSRect(x: 0, y: Double(row) * cellHeight, width: bounds.width,
+               height: cellHeight)
     }
 
     var focusedPaneId: String? {
@@ -223,6 +279,8 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         }
     }
 
+    // MARK: Resize
+
     private func scheduleResize() {
         resizeDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -245,88 +303,42 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     }
 
     // MARK: Drawing
-    /// Top-left origin: every grid computation (rows, hit-testing, mouse
-    /// coordinates) is written in terminal top-down space.
-    override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let surface, surface.frame.width > 0,
               let context = NSGraphicsContext.current?.cgContext
         else { return }
-        // Pure-CG pipeline: rects via fill(CGRect), glyphs via CTLineDraw.
-        // The view is flipped, so all coordinates are terminal top-down.
-        fill(context, bounds, color: theme.background, alpha: 1)
-
         let frame = surface.frame
         let width = Int(frame.width)
 
-        // Pass 1: background spans per row.
+        if dirtyRect == .infinite {
+            fill(context, CGRect(x: 0, y: 0, width: bounds.width,
+                                 height: Double(frame.height) * cellHeight),
+                 color: theme.background, alpha: 1)
+        }
+
         for row in 0..<Int(frame.height) {
-            let slice = row * width..<(row + 1) * width
-            var start = slice.lowerBound
-            var bg = theme.cellColors(frame.cells[start]).bg
-            var index = start + 1
-            while index <= slice.upperBound {
-                let nextBg = index < slice.upperBound
-                    ? theme.cellColors(frame.cells[index]).bg : bg
-                if index == slice.upperBound || nextBg != bg {
-                    fill(context,
-                         CGRect(x: Double(start % width) * cellWidth,
-                                y: Double(row) * cellHeight,
-                                width: Double(index - start) * cellWidth,
-                                height: cellHeight),
-                         color: bg, alpha: 1)
-                    if index < slice.upperBound {
-                        start = index
-                        bg = nextBg
-                    }
-                }
-                index += 1
+            let rect = rowRect(row)
+            guard dirtyRect == .infinite || rect.intersects(dirtyRect) else {
+                continue
             }
+            drawRow(row, cells: frame.cells, width: width,
+                    context: context, dirty: dirtyRect == .infinite)
         }
 
-        // Pass 2: glyphs. Flipped view: translate to the baseline, flip the
-        // local CTM, draw — the classic flipped-context CoreText recipe.
-        let ascent = fontBaselineOffset()
-        for (index, cell) in frame.cells.enumerated() where !cell.skip {
-            guard !cell.symbol.isEmpty, cell.symbol != " " else { continue }
-            let line = shapedLine(symbol: cell.symbol, styleKey: theme.shapeKey(cell))
-            let position = CGPoint(x: CGFloat(Double(index % width) * cellWidth),
-                                   y: CGFloat(Double(index / width) * cellHeight))
-            context.saveGState()
-            // CTLineDraw draws at the context's accumulated text position;
-            // reset it or glyphs chain onto the previous one.
-            context.textMatrix = CGAffineTransform.identity
-            context.translateBy(x: position.x, y: position.y + ascent)
-            context.scaleBy(x: 1, y: -1)
-            CTLineDraw(line, context)
-            context.restoreGState()
-        }
-
-        // Pass 3: decorations at exact cell-grid coordinates.
-        for (index, cell) in frame.cells.enumerated() {
-            let colors = theme.cellColors(cell)
-            let base = CGRect(x: Double(index % width) * cellWidth,
-                              y: Double(index / width) * cellHeight,
-                              width: cellWidth, height: 1)
-            if cell.modifier & CellTheme.underline != 0 {
-                fill(context, base.offsetBy(dx: 0, dy: cellHeight - 2),
-                     color: colors.fg, alpha: 1)
+        // Selection overlay (streaming spans).
+        if let anchor = selectionAnchor, let head = selectionHead,
+           let bounds = selectionBounds {
+            let spans = CellSurfaceLogic.rowSpans(anchor: anchor, head: head,
+                                                  x0: bounds.x0, x1: bounds.x1)
+            for span in spans {
+                let rect = CGRect(
+                    x: Double(span.from) * cellWidth,
+                    y: Double(span.row) * cellHeight,
+                    width: Double(span.to - span.from + 1) * cellWidth,
+                    height: cellHeight)
+                fill(context, rect, color: 0x999999, alpha: 0.35)
             }
-            if cell.modifier & CellTheme.strikethrough != 0 {
-                fill(context, base.offsetBy(dx: 0, dy: cellHeight / 2),
-                     color: colors.fg, alpha: 1)
-            }
-            if let link = cell.hyperlink, Int(link) < frame.hyperlinks.count {
-                fill(context, base.offsetBy(dx: 0, dy: cellHeight - 1),
-                     color: colors.fg, alpha: 1)
-            }
-        }
-
-        // Selection overlay.
-        if let anchor = selectionAnchor, let head = selectionHead {
-            let rect = selectionRect(anchor: anchor, head: head, frame: frame)
-            fill(context, rect, color: 0x999999, alpha: 0.35)
         }
 
         // Cursor (50% alpha over content).
@@ -343,16 +355,159 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         if let popup = surface.popup {
             let origin = CellSurfaceLogic.popupOrigin(
                 mainCols: width, mainRows: Int(frame.height),
-                popupCols: Int(popup.frame.width), popupRows: Int(popup.frame.height),
+                popupCols: Int(popup.frame.width),
+                popupRows: Int(popup.frame.height),
                 cellWidth: cellWidth, cellHeight: cellHeight)
             let box = CGRect(x: origin.x, y: origin.y,
                              width: Double(popup.frame.width) * cellWidth,
                              height: Double(popup.frame.height) * cellHeight)
             fill(context, box, color: theme.background, alpha: 1)
             stroke(context, box, color: theme.foreground, alpha: 0.6)
-            drawFrame(popup.frame, context: context,
-                      originX: origin.x, originY: origin.y)
+            for row in 0..<Int(popup.frame.height) {
+                drawRowCells(popup.frame.cells, width: Int(popup.frame.width),
+                             row: row, originX: origin.x,
+                             context: context, cacheKey: "popup\(row)")
+            }
         }
+    }
+
+    /// One row: background spans + one CTLine for all glyphs (grid-pinned
+    private func drawRow(_ row: Int, cells: [CellData], width: Int,
+                         context: CGContext, dirty: Bool) {
+        let slice = Array(cells[(row * width)..<((row + 1) * width)])
+        if dirty {
+            drawBackgroundSpans(slice, row: row, context: context)
+        }
+        let line: CTLine
+        if let cached = rowLines[slice] {
+            line = cached
+        } else {
+            line = buildRowLine(slice)
+            rowLines[slice] = line
+        }
+        let ascent = fontBaselineOffset()
+        context.saveGState()
+        context.textMatrix = CGAffineTransform.identity
+        context.translateBy(x: 0, y: CGFloat(Double(row) * cellHeight) + ascent)
+        context.scaleBy(x: 1, y: -1)
+        CTLineDraw(line, context)
+        context.restoreGState()
+
+        // Decorations at exact cell-grid coordinates.
+        for (col, cell) in slice.enumerated() {
+            let colors = theme.cellColors(cell)
+            if cell.modifier & CellTheme.underline != 0 {
+                fill(context,
+                     CGRect(x: Double(col) * cellWidth,
+                            y: Double(row) * cellHeight + cellHeight - 2,
+                            width: cellWidth, height: 1),
+                     color: colors.fg, alpha: 1)
+            }
+            if cell.modifier & CellTheme.strikethrough != 0 {
+                fill(context,
+                     CGRect(x: Double(col) * cellWidth,
+                            y: Double(row) * cellHeight + cellHeight / 2,
+                            width: cellWidth, height: 1),
+                     color: colors.fg, alpha: 1)
+            }
+            if cell.hyperlink != nil {
+                fill(context,
+                     CGRect(x: Double(col) * cellWidth,
+                            y: Double(row) * cellHeight + cellHeight - 1,
+                            width: cellWidth, height: 1),
+                     color: colors.fg, alpha: 1)
+            }
+        }
+    }
+
+    /// Popup rows draw with their own cache namespace and no dirty tracking.
+    private func drawRowCells(_ cells: [CellData], width: Int, row: Int,
+                              originX: Double, context: CGContext,
+                              cacheKey: String) {
+        let slice = Array(cells[(row * width)..<((row + 1) * width)])
+        let ascent = fontBaselineOffset()
+        let line = buildRowLine(slice)
+        context.saveGState()
+        context.textMatrix = CGAffineTransform.identity
+        context.translateBy(
+            x: CGFloat(originX),
+            y: CGFloat(Double(row) * cellHeight) + ascent)
+        context.scaleBy(x: 1, y: -1)
+        CTLineDraw(line, context)
+        context.restoreGState()
+        _ = cacheKey
+    }
+
+    private func drawBackgroundSpans(_ rowCells: [CellData], row: Int,
+                                     context: CGContext) {
+        var start = 0
+        var bg = theme.cellColors(rowCells[0]).bg
+        var index = 1
+        while index <= rowCells.count {
+            let nextBg = index < rowCells.count
+                ? theme.cellColors(rowCells[index]).bg : bg
+            if index == rowCells.count || nextBg != bg {
+                fill(context,
+                     CGRect(x: Double(start) * cellWidth,
+                            y: Double(row) * cellHeight,
+                            width: Double(index - start) * cellWidth,
+                            height: cellHeight),
+                     color: bg, alpha: 1)
+                if index < rowCells.count {
+                    start = index
+                    bg = nextBg
+                }
+            }
+            index += 1
+        }
+    }
+
+    /// Builds one CTLine for a row. Per-glyph kern = occupiedColumns *
+    /// cellWidth − naturalAdvance pins every glyph to its cell; wide
+    /// graphemes (followed by `skip` continuation cells) span their columns.
+    private func buildRowLine(_ rowCells: [CellData]) -> CTLine {
+        let attributed = NSMutableAttributedString()
+        var col = 0
+        while col < rowCells.count {
+            let cell = rowCells[col]
+            var columns = 1
+            while col + columns < rowCells.count, rowCells[col + columns].skip {
+                columns += 1
+            }
+            let symbol = cell.symbol.isEmpty ? " " : cell.symbol
+            let advance = symbolAdvance(symbol)
+            var kern = cellWidth - advance
+            if columns > 1 {
+                kern = Double(columns) * cellWidth - advance
+            }
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: rowFont(cell),
+                .foregroundColor: NSColor(rgb: theme.cellColors(cell).fg),
+            ]
+            if abs(kern) > 0.01 {
+                attributes[.kern] = NSNumber(value: kern)
+            }
+            attributed.append(NSAttributedString(string: symbol, attributes: attributes))
+            col += columns
+        }
+        return CTLineCreateWithAttributedString(attributed)
+    }
+
+    private func rowFont(_ cell: CellData) -> NSFont {
+        if cell.modifier & CellTheme.bold != 0 { return boldFont }
+        if cell.modifier & CellTheme.italic != 0 { return italicFont }
+        return font
+    }
+
+    /// Natural typographic advance of a single symbol (cached).
+    private func symbolAdvance(_ symbol: String) -> Double {
+        if let cached = symbolAdvances[symbol] { return cached }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: symbol, attributes: attrs))
+        let width = Double(CTLineGetTypographicBounds(line, nil, nil, nil))
+        symbolAdvances[symbol] = width
+        return width
     }
 
     private func fill(_ context: CGContext, _ rect: CGRect, color: UInt32,
@@ -375,76 +530,32 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         context.stroke(rect)
     }
 
-    private func drawFrame(_ frame: FrameData, context: CGContext,
-                           originX: Double, originY: Double) {
-        let ascent = fontBaselineOffset()
-        for (index, cell) in frame.cells.enumerated() where !cell.skip {
-            guard !cell.symbol.isEmpty, cell.symbol != " " else { continue }
-            let line = shapedLine(symbol: cell.symbol, styleKey: theme.shapeKey(cell))
-            let position = CGPoint(
-                x: CGFloat(originX + Double(index % Int(frame.width)) * cellWidth),
-                y: CGFloat(originY + Double(index / Int(frame.width)) * cellHeight))
-            context.saveGState()
-            context.textMatrix = CGAffineTransform.identity
-            context.translateBy(x: position.x, y: position.y + ascent)
-            context.scaleBy(x: 1, y: -1)
-            CTLineDraw(line, context)
-            context.restoreGState()
-        }
-    }
-
     private func fontBaselineOffset() -> Double {
         Double(CTFontGetAscent(font as CTFont)).rounded(.down)
     }
 
-    private func shapedLine(symbol: String, styleKey: UInt32) -> CTLine {
-        if let cached = glyphCache[styleKey]?[symbol] {
-            return cached
-        }
-        var attributes: [NSAttributedString.Key: Any] = [.font: font]
-        if styleKey >> 24 & UInt32(CellTheme.bold) != 0 { attributes[.font] = boldFont }
-        if styleKey >> 24 & UInt32(CellTheme.italic) != 0 { attributes[.font] = italicFont }
-        attributes[.foregroundColor] = NSColor(rgb: styleKey & 0xffffff)
-        let line = CTLineCreateWithAttributedString(
-            NSAttributedString(string: symbol, attributes: attributes))
-        if glyphCacheCount < Self.glyphCacheLimit {
-            glyphCache[styleKey, default: [:]][symbol] = line
-            glyphCacheCount += 1
-        }
-        return line
-    }
-
-    // MARK: Selection
-
-    private func selectionRect(anchor: (col: Int, row: Int),
-                               head: (col: Int, row: Int),
-                               frame: FrameData) -> NSRect {
-        let row0 = min(anchor.row, head.row)
-        let row1 = max(anchor.row, head.row)
-        let col0 = min(anchor.col, head.col)
-        let col1 = max(anchor.col, head.col)
-        return NSRect(
-            x: Double(col0) * cellWidth,
-            y: Double(row0) * cellHeight,
-            width: Double(col1 - col0 + 1) * cellWidth,
-            height: Double(row1 - row0 + 1) * cellHeight)
-    }
+    // MARK: Selection (streaming, pane-constrained)
 
     func copy(_ sender: Any?) {
         guard let surface, let anchor = selectionAnchor, let head = selectionHead
         else { return }
         let frame = surface.popup?.frame ?? surface.frame
-        let row0 = min(anchor.row, head.row), row1 = max(anchor.row, head.row)
-        let col0 = min(anchor.col, head.col), col1 = max(anchor.col, head.col)
+        guard let bounds = selectionBounds else { return }
+        let spans = CellSurfaceLogic.rowSpans(anchor: anchor, head: head,
+                                              x0: bounds.x0, x1: bounds.x1)
+        let width = Int(frame.width)
         var lines: [String] = []
-        for row in row0...min(row1, Int(frame.height) - 1) {
+        for span in spans where span.row < Int(frame.height) {
             var line = ""
-            for col in col0...min(col1, Int(frame.width) - 1) {
-                let cell = frame.cells[row * Int(frame.width) + col]
+            for col in span.from...min(span.to, width - 1)
+            where span.row * width + col < frame.cells.count {
+                let cell = frame.cells[span.row * width + col]
                 if !cell.skip { line += cell.symbol }
             }
-            lines.append(line)
+            // Trailing whitespace is layout, not content.
+            lines.append(line.trimmingCharacters(in: CharacterSet(charactersIn: " ")))
         }
+        while lines.last == "" { lines.removeLast() }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
@@ -504,7 +615,6 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     }
     func firstRect(forCharacterRange range: NSRange,
                    actualRange: NSRangePointer?) -> NSRect {
-        // Place IME candidates near the focused pane's cursor cell.
         guard let surface else { return .zero }
         let frame = surface.popup?.frame ?? surface.frame
         guard let cursor = frame.cursor else { return .zero }
@@ -529,30 +639,48 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             onOpenURL?(url)
             return
         }
-        let frame = surface.popup?.frame ?? surface.frame
-        let cell = CellSurfaceLogic.clampedCell(x: Double(point.x),
-                                                y: Double(point.y),
-                                                cellWidth: cellWidth,
-                                                cellHeight: cellHeight,
-                                                cols: Int(frame.width),
-                                                rows: Int(frame.height))
-        if event.clickCount == 2 {
-            // Double-click selects the word under the pointer.
-            selectionAnchor = CellSurfaceLogic.wordStart(
-                cells: frame.cells, width: Int(frame.width), col: cell.col, row: cell.row)
-            selectionHead = CellSurfaceLogic.wordEnd(
-                cells: frame.cells, width: Int(frame.width), col: cell.col, row: cell.row)
-            isDraggingSelection = false
-        } else {
-            selectionAnchor = cell
-            selectionHead = cell
-            isDraggingSelection = true
+        // Selection lives inside one pane's inner rect (borders excluded).
+        let paneId = CellSurfaceLogic.paneId(atX: Double(point.x),
+                                             atY: Double(point.y),
+                                             cellWidth: cellWidth,
+                                             cellHeight: cellHeight,
+                                             panes: surface.panes)
+        let inner = paneId.flatMap { id in
+            surface.panes.first { $0.paneId == id }?.innerRect
         }
-        mouseDownPane = CellSurfaceLogic.paneId(atX: Double(point.x),
-                                                atY: Double(point.y),
-                                                cellWidth: cellWidth,
-                                                cellHeight: cellHeight,
-                                                panes: surface.panes)
+        if let inner {
+            selectionBounds = (Int(inner.x), Int(inner.x) + Int(inner.width) - 1,
+                               Int(inner.y), Int(inner.y) + Int(inner.height) - 1)
+            let cell = CellSurfaceLogic.clampedCell(
+                x: Double(point.x), y: Double(point.y),
+                cellWidth: cellWidth, cellHeight: cellHeight,
+                cols: Int(inner.x) + Int(inner.width),
+                rows: Int(inner.y) + Int(inner.height))
+            let local = (col: cell.col - Int(inner.x), row: cell.row - Int(inner.y))
+            if event.clickCount == 2 {
+                let popupFrame = surface.popup?.frame
+                let cells = popupFrame?.cells ?? surface.frame.cells
+                let width = popupFrame.map { Int($0.width) } ?? Int(surface.frame.width)
+                let absCol = Int(inner.x) + local.col
+                let absRow = Int(inner.y) + local.row
+                let start = CellSurfaceLogic.wordStart(cells: cells, width: width,
+                                                       col: absCol, row: absRow)
+                let end = CellSurfaceLogic.wordEnd(cells: cells, width: width,
+                                                   col: absCol, row: absRow)
+                selectionAnchor = (start.col - Int(inner.x), local.row)
+                selectionHead = (end.col - Int(inner.x), local.row)
+                isDraggingSelection = false
+            } else {
+                selectionAnchor = local
+                selectionHead = local
+                isDraggingSelection = true
+            }
+        } else {
+            selectionAnchor = nil
+            selectionHead = nil
+            selectionBounds = nil
+        }
+        mouseDownPane = paneId
         // Clicking a pane focuses it through the API (endpoint semantics:
         // focus is a request, not a synthesized TUI click).
         if let paneId = mouseDownPane {
@@ -565,14 +693,14 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let surface else { return }
         let point = convert(event.locationInWindow, from: nil)
-        if isDraggingSelection {
-            let frame = surface.popup?.frame ?? surface.frame
-            selectionHead = CellSurfaceLogic.clampedCell(
+        if isDraggingSelection, let bounds = selectionBounds {
+            let cell = CellSurfaceLogic.clampedCell(
                 x: Double(point.x), y: Double(point.y),
                 cellWidth: cellWidth, cellHeight: cellHeight,
-                cols: Int(frame.width), rows: Int(frame.height))
+                cols: bounds.x1 + 1, rows: bounds.y1 + 1)
+            selectionHead = (min(max(cell.col - 0, 0), bounds.x1),
+                             min(max(cell.row, 0), bounds.y1))
             needsDisplay = true
         }
         if let paneId = mouseDownPane, paneReportsMouse(paneId) {
@@ -612,7 +740,7 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     private func sendMouse(_ event: NSEvent, point: NSPoint,
                            isDown: Bool, isDrag: Bool) {
-        guard let surface, let paneId = mouseDownPane else { return }
+        guard let paneId = mouseDownPane else { return }
         guard let cell = CellSurfaceLogic.cellAt(x: Double(point.x),
                                                  y: Double(point.y),
                                                  cellWidth: cellWidth,
@@ -627,9 +755,6 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             geometry: nil,
             modifiers: CellInputMapper.modifierBits(event.modifierFlags),
             lines: 0)
-        if surface.popup != nil, surface.popup.map(\.terminalId) != nil {
-            // Mouse only routes to panes; popups take wheel/keys separately.
-        }
         onPaneInput?(paneId, [input])
     }
 
@@ -690,8 +815,7 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         return frame.hyperlinks[Int(index)]
     }
 
-    // MARK: Paste / copy equivalents
-
+    // MARK: Key equivalents (copy/paste)
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.modifierFlags.contains(.command),
