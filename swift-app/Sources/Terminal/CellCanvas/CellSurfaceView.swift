@@ -925,6 +925,56 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         return frame.hyperlinks[Int(index)]
     }
 
+    // MARK: Right-click pane menu
+
+    /// Pane the context menu was opened on.
+    private var contextPaneId: String?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let surface, surface.popup == nil else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let paneId = CellSurfaceLogic.paneId(
+                atX: Double(point.x), atY: Double(point.y),
+                cellWidth: cellWidth, cellHeight: cellHeight,
+                panes: surface.panes)
+        else { return nil }
+        contextPaneId = paneId
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Split Right", action: #selector(menuSplitRight),
+                     keyEquivalent: "d").keyEquivalentModifierMask = .command
+        let down = menu.addItem(withTitle: "Split Down",
+                                action: #selector(menuSplitDown), keyEquivalent: "d")
+        down.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Zoom Pane", action: #selector(menuZoomPane),
+                     keyEquivalent: "\r").keyEquivalentModifierMask = .shift
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Close Pane", action: #selector(menuClosePane),
+                     keyEquivalent: "")
+        for item in menu.items { item.target = self }
+        return menu
+    }
+
+    @objc private func menuSplitRight() {
+        onRequest?("pane.split", ["direction": "right", "focus": true])
+    }
+
+    @objc private func menuSplitDown() {
+        onRequest?("pane.split", ["direction": "down", "focus": true])
+    }
+
+    @objc private func menuZoomPane() {
+        if let paneId = contextPaneId {
+            onRequest?("pane.zoom", ["pane_id": paneId])
+        }
+    }
+
+    @objc private func menuClosePane() {
+        if let paneId = contextPaneId {
+            onRequest?("pane.close", ["pane_id": paneId])
+        }
+    }
+
     // MARK: Key equivalents (copy/paste)
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -945,6 +995,14 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             case 126: onRequest?("pane.focus_direction", ["direction": "up"]); return true
             default: break
             }
+        }
+        // Shift-Cmd-Return: zoom the focused pane.
+        if flags.contains(.command), flags.contains(.shift),
+           event.keyCode == 36 {
+            if let paneId = focusedPaneId {
+                onRequest?("pane.zoom", ["pane_id": paneId])
+            }
+            return true
         }
         guard flags.contains(.command) else { return false }
         if key == "c", selectionAnchor != nil {
