@@ -57,6 +57,7 @@ enum TestRunner {
         CellInputMapperTests.register()
         CellThemeTests.register()
         EndpointHandshakeTests.register()
+        EndpointModelTests.register()
         EndpointSessionTests.register()
         for (name, fn) in TestRegistry.tests {
             do { try fn() } catch {
