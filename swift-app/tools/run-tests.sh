@@ -19,6 +19,8 @@ TEST_SOURCES=(
     Sources/Herdr/HerdrModel.swift
     Sources/Infra/UnixSocket.swift
     Sources/Terminal/CellCanvas/CellTheme.swift
+    Sources/Terminal/CellCanvas/GhosttyThemes.swift
+    Sources/Chrome/ChromeTheme.swift
     Sources/Terminal/CellCanvas/CellInputMapper.swift
     Sources/Terminal/CellCanvas/CellSurfaceView.swift
 

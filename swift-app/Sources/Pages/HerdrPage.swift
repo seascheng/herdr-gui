@@ -26,14 +26,42 @@ final class HerdrPageController {
     private var sidebarWidth: NSLayoutConstraint?
     private var settingsPanel: SettingsPanelController?
 
-    init(spec: SessionSpec, clientSocketPath: String) {
+    /// One-shot automation for private terminal pages: create the first
+    /// workspace on a fresh session and optionally type a command (ssh).
+    private var bootstrapCommand: String?
+    private var bootstrappedWorkspace = false
+    private var bootstrappedCommand = false
+
+    init(spec: SessionSpec, clientSocketPath: String,
+         bootstrapCommand: String? = nil) {
         self.spec = spec
+        self.bootstrapCommand = bootstrapCommand
         client = EndpointClient(socketPath: clientSocketPath,
                                 cellWidth: UInt32(canvas.cellWidth),
                                 cellHeight: UInt32(canvas.cellHeight))
         buildUI()
         wireClient()
+        applyTheme(GhosttyThemes.current())
+        observeTheme()
         client.start()
+    }
+
+    private var themeObserver: NSObjectProtocol?
+
+    private func observeTheme() {
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyThemes.changedNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            if let theme = note.object as? CellTheme {
+                self?.applyTheme(theme)
+            }
+        }
+    }
+
+    /// Live theme switch: canvas palette + glyph caches rebuilt.
+    private func applyTheme(_ theme: CellTheme) {
+        canvas.theme = theme
+        canvas.needsDisplay = true
     }
 
     private func buildUI() {
@@ -154,6 +182,7 @@ final class HerdrPageController {
 
     private func wireClient() {
         client.onSnapshot = { [weak self] snapshot in
+            self?.bootstrap(snapshot)
             self?.applySidebarState(HerdrModel.sidebarState(snapshot))
         }
         client.onSurface = { [weak self] surface in
@@ -179,15 +208,17 @@ final class HerdrPageController {
     // MARK: surface / lifecycle
 
     var keyView: NSView? { canvas }
-    /// No libghostty surface on herdr pages anymore; the ghostty surface
-    /// registry lookup (notifications) only applies to plain terminal pages.
-    var surfaceView: Ghostty.SurfaceView? { nil }
+
 
     func focusTerminal() {
         if let keyView { keyView.window?.makeFirstResponder(keyView) }
     }
 
     func shutdown() {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+        themeObserver = nil
         client.stop()
         canvas.removeFromSuperview()
     }
@@ -237,6 +268,27 @@ final class HerdrPageController {
                let message = error["message"] as? String {
                 HerdrLog.warning("endpoint \(method): \(message)")
             }
+        }
+    }
+
+    // MARK: bootstrap (private terminal pages)
+
+    private func bootstrap(_ snapshot: ClientShellSnapshot) {
+        if snapshot.workspaces.isEmpty, !bootstrappedWorkspace {
+            bootstrappedWorkspace = true
+            request("workspace.create", [:])
+            return
+        }
+        if let command = bootstrapCommand, !bootstrappedCommand,
+           !snapshot.workspaces.isEmpty, let paneId = snapshot.focusedPaneId {
+            bootstrappedCommand = true
+            bootstrapCommand = nil
+            client.sendPaneInput(paneId: paneId, events: [
+                .textCommit(command),
+                .key(code: .enter, modifiers: 0, kind: .press, repeatCount: 1,
+                     shiftedCodepoint: nil, generatedText: nil, tracksRelease: false,
+                     physicalKeyId: nil, windowsRecord: nil),
+            ])
         }
     }
 

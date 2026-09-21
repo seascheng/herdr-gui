@@ -63,6 +63,11 @@ enum CellThemeTests {
             let hidden = theme.cellColors(cell(fg: 0x02ff0000, bg: 0x0200ff00, modifier: 128))
             expectEq(hidden.fg, 0x00ff00, "hidden fg = bg")
         }
-        expect(ok1 && ok2 && ok3, "registration")
+        let ok4 = TestRegistry.add("theme: ghostty hex and file parsing") {
+            expectEq(GhosttyThemes.hexValue("#ff8800"), 0xff8800, "hex 6")
+            expectEq(GhosttyThemes.hexValue("#abc"), 0xaabbcc, "hex 3 expands")
+            expect(GhosttyThemes.hexValue("nope") == nil, "bad hex")
+        }
+        expect(ok1 && ok2 && ok3 && ok4, "registration")
     }
 }

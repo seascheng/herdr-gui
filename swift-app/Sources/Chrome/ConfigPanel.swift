@@ -47,6 +47,7 @@ final class SettingsPanelController: NSObject {
     // MARK: controls
 
     private var themePopup = NSPopUpButton()
+    private var guiThemePopup = NSPopUpButton()
     private var indicatorsPopup = NSPopUpButton()
     private var soundSwitch = NSSwitch()
     private var toastPopup = NSPopUpButton()
@@ -146,6 +147,22 @@ final class SettingsPanelController: NSObject {
         section("Appearance")
         row("Theme", themePopup)
         row("Status indicators", indicatorsPopup)
+
+        // GUI-local: the terminal palette every page paints with. Ghostty
+        // theme files from the user's theme library.
+        let guiNames = GhosttyThemes.names()
+        guiThemePopup.addItem(withTitle: "Default")
+        guiThemePopup.addItems(withTitles: guiNames)
+        guiThemePopup.font = .systemFont(ofSize: 12.5)
+        guiThemePopup.target = self
+        guiThemePopup.action = #selector(guiThemeChanged)
+        if let current = GhosttyThemes.currentName(),
+           let index = guiNames.firstIndex(of: current) {
+            guiThemePopup.selectItem(at: index + 1)  // +1 for Default
+        } else {
+            guiThemePopup.selectItem(at: 0)
+        }
+        row("Terminal theme (GUI)", guiThemePopup)
         if let r = lastRow { stack.setCustomSpacing(20, after: r) }
 
         section("Feedback")
@@ -228,12 +245,21 @@ final class SettingsPanelController: NSObject {
         }
     }
 
+    @objc private func guiThemeChanged(_ sender: Any) {
+        let index = guiThemePopup.indexOfSelectedItem
+        let names = GhosttyThemes.names()
+        GhosttyThemes.apply(name: index == 0 ? nil : names[index - 1])
+    }
+
     @objc private func themeChanged(_: Any) {
         let raw = themePopup.titleOfSelectedItem ?? "Catppuccin"
         let name = raw.lowercased().replacingOccurrences(of: " ", with: "-")
         update { c in
-            let withName = TomlEdit.upsert(c, section: "theme", key: "name", value: "\"\(name)\"")
-            return TomlEdit.upsertBool(withName, section: "theme", key: "auto_switch", value: false)
+            let withName = TomlEdit.upsert(
+                c, section: "theme", key: "name",
+                value: "\"" + name + "\"")
+            return TomlEdit.upsertBool(withName, section: "theme",
+                                       key: "auto_switch", value: false)
         }
     }
 

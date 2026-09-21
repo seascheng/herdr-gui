@@ -1,5 +1,4 @@
 import Cocoa
-import GhosttyKit
 
 // MARK: - app delegate (window + session management)
 
@@ -8,61 +7,37 @@ private var keepAliveDelegate: AppDelegate?
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
-    var ghostty: Ghostty.App!
-
-    /// The libghostty app handle for surface construction (pages are
-    /// built only after applicationDidFinishLaunching initialized it).
-    static func ghosttyApp() -> ghostty_app_t {
-        guard let delegate = NSApplication.shared.delegate as? AppDelegate,
-              let app = delegate.ghostty?.app
-        else { fatalError("libghostty app not initialized") }
-        return app
-    }
-
     // One open connection per entry; the session bar mirrors this array.
     private enum Session {
         case herdr(HerdrPageController)
-        case terminal(TerminalPageController)
 
         var spec: SessionSpec {
             switch self {
             case .herdr(let page): return page.spec
-            case .terminal(let page): return page.spec
             }
         }
 
         var view: NSView {
             switch self {
             case .herdr(let page): return page.view
-            case .terminal(let page): return page.view
             }
         }
 
         var keyView: NSView? {
             switch self {
             case .herdr(let page): return page.keyView
-            case .terminal(let page): return page.keyView
-            }
-        }
-
-        var surfaceView: Ghostty.SurfaceView? {
-            switch self {
-            case .herdr(let page): return page.surfaceView
-            case .terminal(let page): return page.surfaceView
             }
         }
 
         func focusTerminal() {
             switch self {
             case .herdr(let page): page.focusTerminal()
-            case .terminal(let page): page.focusTerminal()
             }
         }
 
         func shutdown() {
             switch self {
             case .herdr(let page): page.shutdown()
-            case .terminal(let page): page.shutdown()
             }
         }
     }
@@ -78,12 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.applicationIconImage = AppIcon.image
         setupStatusBarItem()
-        // Our OWN ghostty home in app support: config + themes copied once
-        // from the user's live Ghostty, then owned by herdr-gui. The env var
-        // MUST be set before ghostty_init — libghostty captures the
-        // resources dir during init. Without it, CLI launches (which
-        // inherit GHOSTTY_RESOURCES_DIR from a hosting Ghostty) and
-        // Finder launches resolve themes against different roots.
+        // Theme home in app support: the user's Ghostty config + themes are
+        // copied once — the terminal theme picker reads this library.
         let ownHome = NSHomeDirectory()
             + "/Library/Application Support/herdr-gui/ghostty"
         let fm = FileManager.default
@@ -103,40 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? fm.copyItem(atPath: seed, toPath: ownHome + "/themes")
             }
         }
-        if fm.fileExists(atPath: ownHome + "/themes") {
-            setenv("GHOSTTY_RESOURCES_DIR", ownHome, 1)
-        }
-        let configPath = fm.fileExists(atPath: ownHome + "/config")
-            ? ownHome + "/config" : nil
-
-        guard ghostty_init(0, nil) == 0 else {
-            let alert = NSAlert(); alert.messageText = "ghostty_init failed"; alert.runModal()
-            NSApp.terminate(nil); return
-        }
-
-        let app = Ghostty.App(configPath: configPath)
-        guard app.readiness == .ready else {
-            let alert = NSAlert()
-            alert.messageText = "Failed to initialize libghostty"
-            alert.runModal(); NSApp.terminate(nil); return
-        }
-        ghostty = app
-        app.delegate = self
-        // Chrome follows the terminal's resolved Ghostty config — the
-        // same one the mirror surface renders with.
-        Chrome.theme = ChromeTheme.from(app.config)
-
-        if ProcessInfo.processInfo.environment["HERDR_DUMP_VIEWS"] == "1" {
-            var probe = ghostty_config_color_s()
-            let key = "background"
-            let resolved = ghostty_config_get(
-                app.config.config, &probe, key, UInt(key.utf8.count))
-            let bg = Chrome.theme.background.usingColorSpace(.sRGB)
-            DiagLog.views("THEME resolved=\(resolved) rgb=\(probe.r),\(probe.g),\(probe.b)"
-                + " env=\(ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] ?? "nil")"
-                + " chrome=\(Int((bg?.redComponent ?? 0) * 255)),\(Int((bg?.greenComponent ?? 0) * 255)),\(Int((bg?.blueComponent ?? 0) * 255))"
-                + " dark=\(Chrome.theme.isDark)\n")
-        }
+        // Chrome follows the active terminal theme (Ghostty theme file).
+        GhosttyThemes.reapply()
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 832))
         let window = StableWindow(
@@ -289,7 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 spec: spec,
                 clientSocketPath: HerdrPageController.defaultClientSocketPath)))
         case .local:
-            append(.terminal(TerminalPageController(spec: spec)))
+            openPrivateTerminal(spec: spec, command: nil)
         case .ssh(let alias) where spec.wantsHerdr:
             // Remote herdr needs the 0.9+ `remote-client-bridge` transport
             // (Phase 2); the old v19 streamlocal tunnel is gone with the
@@ -300,8 +239,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Remote herdr pages move to herdr's remote-client-bridge in " +
                 "the next release. Use a plain ssh terminal page for now."
             alert.runModal()
-        case .ssh:
-            append(.terminal(TerminalPageController(spec: spec)))
+        case .ssh(let alias):
+            openPrivateTerminal(spec: spec, command: "ssh \(alias)")
+        }
+    }
+
+    /// Standalone Terminal / ssh pages: a private herdr server with its
+    /// own sockets, rendered by the same endpoint client + cell canvas.
+    /// The page owns the server's lifetime.
+    private func openPrivateTerminal(spec: SessionSpec, command: String?) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let socketPath = PrivateHerdrSession.shared.clientSocketPath(
+                    key: spec.id) else {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Could not start herdr for \(spec.label)"
+                    alert.informativeText = "herdr 0.9+ must be installed."
+                    alert.runModal()
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                guard let self, self.sessions.firstIndex(where: {
+                    $0.spec.id == spec.id
+                }) == nil else { return }
+                let page = HerdrPageController(
+                    spec: spec, clientSocketPath: socketPath,
+                    bootstrapCommand: command)
+                self.append(.herdr(page))
+            }
         }
     }
 
@@ -545,10 +511,3 @@ extension AppDelegate {
     }
 }
 
-extension AppDelegate: GhosttyAppDelegate {
-    func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
-        guard let delegate = NSApplication.shared.delegate as? AppDelegate else { return nil }
-        return delegate.sessions.compactMap { $0.surfaceView }
-            .first { $0.id == uuid }
-    }
-}

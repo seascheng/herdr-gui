@@ -1,5 +1,4 @@
 import Cocoa
-import GhosttyKit
 
 // MARK: - Chrome theme (follows the mirror surface's Ghostty config)
 
@@ -18,51 +17,18 @@ struct ChromeTheme {
         foreground: NSColor(srgbRed: 0.87, green: 0.87, blue: 0.87, alpha: 1),
         accent: NSColor(srgbRed: 0.30, green: 0.30, blue: 0.30, alpha: 1))
 
-    static func from(_ cfg: Ghostty.Config?) -> ChromeTheme {
-        guard let handle = cfg?.config else { return .fallback }
-        func color(_ key: String) -> NSColor? {
-            var v = ghostty_config_color_s()
-            guard ghostty_config_get(handle, &v, key, UInt(key.utf8.count)) else { return nil }
-            return NSColor(srgbRed: CGFloat(v.r) / 255, green: CGFloat(v.g) / 255,
-                           blue: CGFloat(v.b) / 255, alpha: 1)
+    /// Chrome from the active cell theme: background/foreground carry
+    /// over; the cursor color doubles as the accent.
+    static func from(_ cellTheme: CellTheme) -> ChromeTheme {
+        func color(_ packed: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat((packed >> 16) & 255) / 255,
+                    green: CGFloat((packed >> 8) & 255) / 255,
+                    blue: CGFloat(packed & 255) / 255, alpha: 1)
         }
-        // Explicit config colors win; a theme-only config (theme = Arthur)
-        // never surfaces its palette through ghostty_config_get — the
-        // theme's own file is the source. Same key syntax as the config.
-        let themed = Self.themeFileColors(cfg)
         return ChromeTheme(
-            background: color("background") ?? themed["background"] ?? fallback.background,
-            foreground: color("foreground") ?? themed["foreground"] ?? fallback.foreground,
-            accent: color("selection-background") ?? themed["selection-background"] ?? fallback.accent)
-    }
-
-    /// `background`/`foreground`/`selection-background` from the theme file
-    /// the config names, searched where ghostty looks for themes. One small
-    /// file read at startup — the chrome must match the terminal exactly.
-    static func themeFileColors(_ cfg: Ghostty.Config?) -> [String: NSColor] {
-        guard let trimmed = configuredThemeName() else { return [:] }
-        let home = NSHomeDirectory()
-        let candidates = [
-            ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]
-                .map { $0 + "/themes/\(trimmed)" },
-            home + "/Library/Application Support/herdr-gui/ghostty/themes/\(trimmed)",
-            home + "/Library/Application Support/com.mitchellh.ghostty/themes/\(trimmed)",
-            home + "/.config/ghostty/themes/\(trimmed)",
-            "/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(trimmed)",
-        ].compactMap { $0 }
-        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }),
-              let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [:] }
-        var result: [String: NSColor] = [:]
-        for line in text.split(separator: "\n") {
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            let k = parts[0].trimmingCharacters(in: .whitespaces)
-            guard ["background", "foreground", "selection-background"].contains(k) else { continue }
-            let hex = parts[1].trimmingCharacters(in: .whitespaces)
-            guard let c = Self.hexColor(hex) else { continue }
-            result[k] = c
-        }
-        return result
+            background: color(cellTheme.background),
+            foreground: color(cellTheme.foreground),
+            accent: color(cellTheme.cursor))
     }
 
     /// The `theme =` name from the config ghostty actually loads — our
