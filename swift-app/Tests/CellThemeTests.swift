@@ -30,10 +30,10 @@ enum CellThemeTests {
                      0xdeadbeef, "zero → default")
             expectEq(CellTheme.resolveColor(17, default: 0xdeadbeef, theme: theme),
                      0xdeadbeef, "17 → default")
-            // Indexed 0x01xxxxxx → palette[low byte].
-            expectEq(CellTheme.resolveColor(0x0100c8, default: 0, theme: theme),
+            // Indexed 0x010000XX → palette[low byte].
+            expectEq(CellTheme.resolveColor(0x010000c8, default: 0, theme: theme),
                      theme.palette[200], "indexed 200")
-            expectEq(CellTheme.resolveColor(0x0100ff, default: 0, theme: theme),
+            expectEq(CellTheme.resolveColor(0x010000ff, default: 0, theme: theme),
                      theme.palette[255], "indexed 255")
             // RGB 0x02RRGGBB.
             expectEq(CellTheme.resolveColor(0x02ab12cd, default: 0, theme: theme),
