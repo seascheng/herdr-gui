@@ -78,10 +78,11 @@ enum EndpointWireError: Error {
 
 // MARK: - Small shared types
 
-struct ClientSurfaceSize: Equatable {
+struct ClientSurfaceSize: Equatable, Codable {
     var cols: UInt16
     var rows: UInt16
     init(cols: UInt16, rows: UInt16) { self.cols = cols; self.rows = rows }
+    enum CodingKeys: String, CodingKey { case cols, rows }
     func encode(to w: inout WireWriter) { w.u16(cols); w.u16(rows) }
     init(from r: inout BincodeReader) throws {
         cols = try r.readU16(); rows = try r.readU16()

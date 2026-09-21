@@ -54,7 +54,7 @@ enum TestRegistry {
 enum TestRunner {
     static func main() {
         // One register call per test file; keep alphabetized as files land.
-        EndpointWireTests.register()
+        EndpointHandshakeTests.register()
         FixtureTests.register()
         for (name, fn) in TestRegistry.tests {
             do { try fn() } catch {
