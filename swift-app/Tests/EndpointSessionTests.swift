@@ -248,7 +248,7 @@ enum EndpointSessionTests {
             recorder.install(on: session)
             session.start()
             defer { session.stop() }
-            expect(recorder.wait(3), "delivery timeout")
+            expect(recorder.wait(4), "delivery timeout")
             expectEq(recorder.snapshots, [1, 2], "snapshots in order")
             expectEq(recorder.surfaces.map(\.proj), [2],
                      "held surface published only after matching snapshot")

@@ -36,6 +36,40 @@ enum CellSurfaceLogic {
         return (max(x, 0), max(y, 0))
     }
 
+    /// Like cellAt, but clamps into the grid: selections that start or end
+    /// in the canvas margin (surface smaller than the view) stay valid.
+    static func clampedCell(x: Double, y: Double, cellWidth: Double,
+                            cellHeight: Double, cols: Int, rows: Int)
+        -> (col: Int, row: Int) {
+        (min(max(Int(max(x, 0) / max(cellWidth, 1)), 0), max(cols - 1, 0)),
+         min(max(Int(max(y, 0) / max(cellHeight, 1)), 0), max(rows - 1, 0)))
+    }
+
+    /// Word bounds around a cell: runs of non-space symbols on one row.
+    static func wordStart(cells: [CellData], width: Int, col: Int, row: Int)
+        -> (col: Int, row: Int) {
+        guard width > 0, row * width + col < cells.count else { return (col, row) }
+        var c = col
+        while c > 0 {
+            let cell = cells[row * width + c - 1]
+            if cell.skip || cell.symbol.isEmpty || cell.symbol == " " { break }
+            c -= 1
+        }
+        return (c, row)
+    }
+
+    static func wordEnd(cells: [CellData], width: Int, col: Int, row: Int)
+        -> (col: Int, row: Int) {
+        guard width > 0, row * width + col < cells.count else { return (col, row) }
+        var c = col
+        while c < width - 1 {
+            let cell = cells[row * width + c + 1]
+            if cell.skip || cell.symbol.isEmpty || cell.symbol == " " { break }
+            c += 1
+        }
+        return (c, row)
+    }
+
     /// DECSCUSR cursor shapes: 3|4 bottom underline bar, 5|6 left bar,
     /// everything else a full block.
     static func cursorRect(x: UInt16, y: UInt16, shape: UInt8,
@@ -68,6 +102,9 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     var onResize: ((ClientSurfaceSize, UInt32, UInt32) -> Void)?
     var onOpenURL: ((URL) -> Void)?
     var onFocusedTitle: ((String?) -> Void)?
+    /// Click-to-focus: endpoint focus is a `pane.focus` request, not a
+    /// synthesized TUI click (herdr-gpui semantics).
+    var onFocusPane: ((String) -> Void)?
 
     private(set) var surface: PaneSurfaceFrame?
     private var font: NSFont
@@ -492,29 +529,50 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             onOpenURL?(url)
             return
         }
-        selectionAnchor = CellSurfaceLogic.cellAt(x: Double(point.x), y: Double(point.y),
-                                                  cellWidth: cellWidth,
-                                                  cellHeight: cellHeight)
-        selectionHead = selectionAnchor
-        isDraggingSelection = true
+        let frame = surface.popup?.frame ?? surface.frame
+        let cell = CellSurfaceLogic.clampedCell(x: Double(point.x),
+                                                y: Double(point.y),
+                                                cellWidth: cellWidth,
+                                                cellHeight: cellHeight,
+                                                cols: Int(frame.width),
+                                                rows: Int(frame.height))
+        if event.clickCount == 2 {
+            // Double-click selects the word under the pointer.
+            selectionAnchor = CellSurfaceLogic.wordStart(
+                cells: frame.cells, width: Int(frame.width), col: cell.col, row: cell.row)
+            selectionHead = CellSurfaceLogic.wordEnd(
+                cells: frame.cells, width: Int(frame.width), col: cell.col, row: cell.row)
+            isDraggingSelection = false
+        } else {
+            selectionAnchor = cell
+            selectionHead = cell
+            isDraggingSelection = true
+        }
         mouseDownPane = CellSurfaceLogic.paneId(atX: Double(point.x),
                                                 atY: Double(point.y),
                                                 cellWidth: cellWidth,
                                                 cellHeight: cellHeight,
                                                 panes: surface.panes)
-        if let paneId = mouseDownPane, paneReportsMouse(paneId) {
-            sendMouse(event, point: point, isDown: true, isDrag: false)
+        // Clicking a pane focuses it through the API (endpoint semantics:
+        // focus is a request, not a synthesized TUI click).
+        if let paneId = mouseDownPane {
+            onFocusPane?(paneId)
+            if paneReportsMouse(paneId) {
+                sendMouse(event, point: point, isDown: true, isDrag: false)
+            }
         }
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard let surface else { return }
         let point = convert(event.locationInWindow, from: nil)
         if isDraggingSelection {
-            selectionHead = CellSurfaceLogic.cellAt(x: Double(point.x),
-                                                    y: Double(point.y),
-                                                    cellWidth: cellWidth,
-                                                    cellHeight: cellHeight)
+            let frame = surface.popup?.frame ?? surface.frame
+            selectionHead = CellSurfaceLogic.clampedCell(
+                x: Double(point.x), y: Double(point.y),
+                cellWidth: cellWidth, cellHeight: cellHeight,
+                cols: Int(frame.width), rows: Int(frame.height))
             needsDisplay = true
         }
         if let paneId = mouseDownPane, paneReportsMouse(paneId) {
@@ -524,8 +582,9 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        // A zero-extent drag is a click, not a selection.
-        if let anchor = selectionAnchor, let head = selectionHead,
+        // A zero-extent single click is focus/select-none, not a selection.
+        if event.clickCount < 2,
+           let anchor = selectionAnchor, let head = selectionHead,
            anchor.col == head.col, anchor.row == head.row {
             selectionAnchor = nil
             selectionHead = nil

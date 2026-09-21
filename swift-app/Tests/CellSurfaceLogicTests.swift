@@ -74,6 +74,40 @@ enum CellSurfaceLogicTests {
             expect(CellSurfaceLogic.cellAt(x: -1, y: 10, cellWidth: 10,
                                            cellHeight: 20) == nil, "negative x")
         }
-        expect(ok1 && ok2 && ok3 && ok4, "registration")
+        let ok5 = TestRegistry.add("surface: clamped cell and word bounds") {
+            let c = CellSurfaceLogic.clampedCell(x: -5, y: 999, cellWidth: 9,
+                                                 cellHeight: 17, cols: 80, rows: 24)
+            expectEq(c.col, 0, "negative x clamps to 0")
+            expectEq(c.row, 23, "y clamps to last row")
+            let mid = CellSurfaceLogic.clampedCell(x: 45, y: 51, cellWidth: 9,
+                                                   cellHeight: 17, cols: 80, rows: 24)
+            expectEq(mid.col, 5, "mid col")
+            expectEq(mid.row, 3, "mid row")
+            // "  hello world " on row 2 of a 12-wide row.
+            let row = 2, width = 16
+            var cells = (0..<width).map { _ in
+                CellData(symbol: " ", fg: 0, bg: 0, modifier: 0, skip: false,
+                         hyperlink: nil)
+            }
+            for (i, ch) in "hello".enumerated() { cells[2 + i].symbol = String(ch) }
+            for (i, ch) in "world".enumerated() { cells[8 + i].symbol = String(ch) }
+            let grid = (0..<3 * width).map { rowCells in
+                rowCells >= row * width && rowCells < (row + 1) * width
+                    ? cells[rowCells - row * width]
+                    : CellData(symbol: " ", fg: 0, bg: 0, modifier: 0,
+                               skip: false, hyperlink: nil)
+            }
+            let start = CellSurfaceLogic.wordStart(cells: grid, width: width,
+                                                   col: 3, row: row)
+            let end = CellSurfaceLogic.wordEnd(cells: grid, width: width,
+                                               col: 3, row: row)
+            expectEq(start.col, 2, "word start")
+            expectEq(end.col, 6, "word end")
+            // A space cell selects just itself.
+            let spaceStart = CellSurfaceLogic.wordStart(cells: grid, width: width,
+                                                        col: 0, row: row)
+            expectEq(spaceStart.col, 0, "space start")
+        }
+        expect(ok1 && ok2 && ok3 && ok4 && ok5, "registration")
     }
 }

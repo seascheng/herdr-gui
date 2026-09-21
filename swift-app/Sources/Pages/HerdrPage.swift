@@ -144,6 +144,9 @@ final class HerdrPageController {
         canvas.onOpenURL = { url in
             NSWorkspace.shared.open(url)
         }
+        canvas.onFocusPane = { [weak self] paneId in
+            self?.request("pane.focus", ["pane_id": paneId])
+        }
     }
 
     private func wireClient() {
