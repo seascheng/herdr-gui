@@ -60,6 +60,7 @@ final class HerdrPageController {
 
     /// Live theme switch: canvas palette + font/cursor config with it.
     private func applyTheme(_ theme: CellTheme) {
+        view.layer?.backgroundColor = NSColor(rgb: theme.background).cgColor
         let font = GhosttyThemes.fontConfig()
         canvas.theme = theme
         canvas.applyFont(family: font.family, size: font.size,
@@ -102,6 +103,10 @@ final class HerdrPageController {
 
         let canvas = self.canvas
         canvas.translatesAutoresizingMaskIntoConstraints = false
+        // Ghostty window padding: the grid floats inside the page, never
+        // glued to the chrome edges.
+        let pad = GhosttyThemes.padding()
+        content.wantsLayer = true
         content.addSubview(canvas)
 
         let sidebarWidth = NSLayoutConstraint(
@@ -114,10 +119,14 @@ final class HerdrPageController {
         sidebarCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed")
 
         NSLayoutConstraint.activate([
-            canvas.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            canvas.topAnchor.constraint(equalTo: tabStrip.bottomAnchor),
-            canvas.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            canvas.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor,
+                                            constant: pad.x),
+            canvas.trailingAnchor.constraint(equalTo: content.trailingAnchor,
+                                             constant: -pad.x),
+            canvas.topAnchor.constraint(equalTo: tabStrip.bottomAnchor,
+                                        constant: pad.y),
+            canvas.bottomAnchor.constraint(equalTo: content.bottomAnchor,
+                                           constant: -pad.y),
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),

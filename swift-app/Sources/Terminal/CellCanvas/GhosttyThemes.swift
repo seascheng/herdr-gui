@@ -156,6 +156,34 @@ enum GhosttyThemes {
         return config
     }
 
+    /// Ghostty `window-padding` / `window-padding-x` / `window-padding-y`
+    /// in points around the terminal grid.
+    static func padding() -> (x: CGFloat, y: CGFloat) {
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        guard let text = configText() else { return (x, y) }
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let raw = parts[1].trimmingCharacters(in: .whitespaces)
+            switch key {
+            case "window-padding":
+                let values = raw.split(separator: ",").compactMap {
+                    CGFloat(Double($0.trimmingCharacters(in: .whitespaces)) ?? 0)
+                }
+                if let first = values.first { x = first; y = first }
+                if values.count > 1 { y = values[1] }
+            case "window-padding-x":
+                x = CGFloat(Double(raw) ?? 0)
+            case "window-padding-y":
+                y = CGFloat(Double(raw) ?? 0)
+            default: break
+            }
+        }
+        return (x, y)
+    }
+
     // MARK: Current theme (GUI-local preference)
 
     private static let themeKey = "cellThemeName"
