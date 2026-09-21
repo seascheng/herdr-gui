@@ -10,8 +10,10 @@ mkdir -p build
 TEST_SOURCES=(
     Sources/Infra/Bincode.swift
     Sources/Infra/BincodeReader.swift
+    Sources/Herdr/Endpoint/EndpointWire.swift
 
     Tests/TestMain.swift
+    Tests/EndpointWireTests.swift
     Tests/FixtureTests.swift
 )
 
