@@ -8,6 +8,11 @@ import Foundation
 // retry can fix.
 
 final class EndpointClient {
+    /// Optional socket revival hook: when the socket is dead before a
+    /// connect attempt, this is called once per client lifetime to bring
+    /// the listener back (app layer starts the local daemon).
+    var reviveSocket: ((String) -> Bool)?
+    private var reviveAttempted = false
     enum State: Equatable {
         case connecting
         case connected
@@ -60,6 +65,12 @@ final class EndpointClient {
 
     private func connect() {
         guard !stopped else { return }
+        // Refused/missing socket + local-daemon mode: pull the daemon up
+        // once, then connect against the fresh socket.
+        if let revive = reviveSocket, !reviveAttempted {
+            reviveAttempted = true
+            _ = revive(socketPath)
+        }
         state = .connecting
         let session = EndpointSession(socketPath: socketPath,
                                       cellWidth: cellWidth,

@@ -39,6 +39,15 @@ final class HerdrPageController {
         client = EndpointClient(socketPath: clientSocketPath,
                                 cellWidth: UInt32(canvas.cellWidth),
                                 cellHeight: UInt32(canvas.cellHeight))
+        // Only the user's own main daemon socket gets auto-started;
+        // private per-page servers manage their own lifecycle.
+        if clientSocketPath == HerdrPageController.defaultClientSocketPath {
+            client.reviveSocket = { path in
+                path == LocalDaemonProbe.clientSocketPath
+                    ? LocalDaemonProbe.startDaemon()
+                    : LocalDaemonProbe.isSocketAlive(path)
+            }
+        }
         buildUI()
         wireClient()
         applyTheme(GhosttyThemes.current())

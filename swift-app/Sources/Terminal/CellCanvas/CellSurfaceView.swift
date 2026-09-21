@@ -521,7 +521,8 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             }
         }
         if let cursor = frame.cursor, cursor.visible,
-           cursor.x < frame.width, cursor.y < frame.height {
+           cursor.x < frame.width, cursor.y < frame.height,
+           !cursorBlinks || blinkPhase {
             let shape = cursorShapeOverride ?? cursor.shape
             let rect = CellSurfaceLogic.cursorRect(
                 x: cursor.x, y: cursor.y, shape: shape,
