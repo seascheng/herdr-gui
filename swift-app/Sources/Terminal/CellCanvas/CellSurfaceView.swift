@@ -149,6 +149,11 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         }
     }
 
+    var focusedPaneId: String? {
+        surface?.panes.first(where: \.focused)?.paneId
+            ?? surface?.panes.first?.paneId
+    }
+
     /// Self-capture of the painted canvas (same-process, no TCC): the
     /// HERDR_DUMP_CELLS smoke harness reads the PNG back. Retries until
     /// the view has been laid out.
@@ -167,7 +172,12 @@ final class CellSurfaceView: NSView, NSTextInputClient {
                 samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: image)
+            let bitmap = NSGraphicsContext(bitmapImageRep: image)
+            NSGraphicsContext.current = bitmap
+            // Emulate a flipped view: bitmap contexts are y-up, while the
+            // draw() math assumes the view's top-left origin.
+            bitmap?.cgContext.translateBy(x: 0, y: CGFloat(image.pixelsHigh))
+            bitmap?.cgContext.scaleBy(x: 1, y: -1)
             self.draw(.infinite)
             NSGraphicsContext.restoreGraphicsState()
             if let data = image.representation(using: .png, properties: [:]) {
@@ -175,13 +185,6 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             }
         }
     }
-
-    var focusedPaneId: String? {
-        surface?.panes.first(where: \.focused)?.paneId
-            ?? surface?.panes.first?.paneId
-    }
-
-    // MARK: Resize
 
     private func scheduleResize() {
         resizeDebounce?.cancel()
@@ -205,16 +208,24 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     }
 
     // MARK: Drawing
+    /// Top-left origin: every grid computation (rows, hit-testing, mouse
+    /// coordinates) is written in terminal top-down space.
+    override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let surface, surface.frame.width > 0 else { return }
-        NSColor(rgb: theme.background).setFill()
-        bounds.fill()
+        guard let surface, surface.frame.width > 0,
+              let context = NSGraphicsContext.current?.cgContext
+        else { return }
+        // Pure-CG pipeline: rects via fill(CGRect), glyphs via CTLineDraw.
+        // The view is flipped, so all coordinates are terminal top-down.
+        fill(context, bounds, color: theme.background, alpha: 1)
 
         let frame = surface.frame
+        let width = Int(frame.width)
+
         // Pass 1: background spans per row.
         for row in 0..<Int(frame.height) {
-            let slice = row * Int(frame.width)..<(row + 1) * Int(frame.width)
+            let slice = row * width..<(row + 1) * width
             var start = slice.lowerBound
             var bg = theme.cellColors(frame.cells[start]).bg
             var index = start + 1
@@ -222,13 +233,12 @@ final class CellSurfaceView: NSView, NSTextInputClient {
                 let nextBg = index < slice.upperBound
                     ? theme.cellColors(frame.cells[index]).bg : bg
                 if index == slice.upperBound || nextBg != bg {
-                    let rect = NSRect(
-                        x: Double(start % Int(frame.width)) * cellWidth,
-                        y: Double(row) * cellHeight,
-                        width: Double(index - start) * cellWidth,
-                        height: cellHeight)
-                    NSColor(rgb: bg).setFill()
-                    rect.fill()
+                    fill(context,
+                         CGRect(x: Double(start % width) * cellWidth,
+                                y: Double(row) * cellHeight,
+                                width: Double(index - start) * cellWidth,
+                                height: cellHeight),
+                         color: bg, alpha: 1)
                     if index < slice.upperBound {
                         start = index
                         bg = nextBg
@@ -238,45 +248,48 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             }
         }
 
-        // Pass 2: glyphs (skip spaces, skip cells, decorations after).
-        let context = NSGraphicsContext.current?.cgContext
-        context?.textMatrix = CGAffineTransform.identity
-        context?.setAllowsAntialiasing(true)
+        // Pass 2: glyphs. Flipped view: translate to the baseline, flip the
+        // local CTM, draw — the classic flipped-context CoreText recipe.
+        let ascent = fontBaselineOffset()
         for (index, cell) in frame.cells.enumerated() where !cell.skip {
             guard !cell.symbol.isEmpty, cell.symbol != " " else { continue }
-            let col = index % Int(frame.width)
-            let row = index / Int(frame.width)
-            let styleKey = theme.shapeKey(cell)
-            let line = shapedLine(symbol: cell.symbol, styleKey: styleKey)
-            context?.saveGState()
-            context?.textPosition = CGPoint(
-                x: CGFloat(Double(col) * cellWidth),
-                y: CGFloat(Double(row) * cellHeight + fontBaselineOffset()))
-            CTLineDraw(line, context!)
-            context?.restoreGState()
+            let line = shapedLine(symbol: cell.symbol, styleKey: theme.shapeKey(cell))
+            let position = CGPoint(x: CGFloat(Double(index % width) * cellWidth),
+                                   y: CGFloat(Double(index / width) * cellHeight))
+            context.saveGState()
+            // CTLineDraw draws at the context's accumulated text position;
+            // reset it or glyphs chain onto the previous one.
+            context.textMatrix = CGAffineTransform.identity
+            context.translateBy(x: position.x, y: position.y + ascent)
+            context.scaleBy(x: 1, y: -1)
+            CTLineDraw(line, context)
+            context.restoreGState()
         }
 
         // Pass 3: decorations at exact cell-grid coordinates.
         for (index, cell) in frame.cells.enumerated() {
-            let col = index % Int(frame.width)
-            let row = index / Int(frame.width)
             let colors = theme.cellColors(cell)
+            let base = CGRect(x: Double(index % width) * cellWidth,
+                              y: Double(index / width) * cellHeight,
+                              width: cellWidth, height: 1)
             if cell.modifier & CellTheme.underline != 0 {
-                fillDecoration(col: col, row: row, y: cellHeight - 2, color: colors.fg)
+                fill(context, base.offsetBy(dx: 0, dy: cellHeight - 2),
+                     color: colors.fg, alpha: 1)
             }
             if cell.modifier & CellTheme.strikethrough != 0 {
-                fillDecoration(col: col, row: row, y: cellHeight / 2, color: colors.fg)
+                fill(context, base.offsetBy(dx: 0, dy: cellHeight / 2),
+                     color: colors.fg, alpha: 1)
             }
             if let link = cell.hyperlink, Int(link) < frame.hyperlinks.count {
-                fillDecoration(col: col, row: row, y: cellHeight - 1, color: colors.fg)
+                fill(context, base.offsetBy(dx: 0, dy: cellHeight - 1),
+                     color: colors.fg, alpha: 1)
             }
         }
 
         // Selection overlay.
         if let anchor = selectionAnchor, let head = selectionHead {
             let rect = selectionRect(anchor: anchor, head: head, frame: frame)
-            NSColor(calibratedWhite: 0.6, alpha: 0.35).setFill()
-            rect.fill()
+            fill(context, rect, color: 0x999999, alpha: 0.35)
         }
 
         // Cursor (50% alpha over content).
@@ -285,45 +298,62 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             let rect = CellSurfaceLogic.cursorRect(
                 x: cursor.x, y: cursor.y, shape: cursor.shape,
                 cellWidth: cellWidth, cellHeight: cellHeight)
-            NSColor(rgb: theme.cursor).withAlphaComponent(0.5).setFill()
-            NSRect(x: rect.x, y: rect.y, width: rect.w, height: rect.h).fill()
+            fill(context, CGRect(x: rect.x, y: rect.y, width: rect.w, height: rect.h),
+                 color: theme.cursor, alpha: 0.5)
         }
 
         // Popup overlay: centered, after everything.
         if let popup = surface.popup {
             let origin = CellSurfaceLogic.popupOrigin(
-                mainCols: Int(frame.width), mainRows: Int(frame.height),
+                mainCols: width, mainRows: Int(frame.height),
                 popupCols: Int(popup.frame.width), popupRows: Int(popup.frame.height),
                 cellWidth: cellWidth, cellHeight: cellHeight)
-            let box = NSRect(x: origin.x, y: origin.y,
+            let box = CGRect(x: origin.x, y: origin.y,
                              width: Double(popup.frame.width) * cellWidth,
                              height: Double(popup.frame.height) * cellHeight)
-            NSColor(rgb: theme.background).setFill()
-            box.fill()
-            NSColor(rgb: theme.foreground).withAlphaComponent(0.6).setStroke()
-            box.frame()
-            drawFrame(popup.frame, originX: origin.x, originY: origin.y)
+            fill(context, box, color: theme.background, alpha: 1)
+            stroke(context, box, color: theme.foreground, alpha: 0.6)
+            drawFrame(popup.frame, context: context,
+                      originX: origin.x, originY: origin.y)
         }
     }
 
-    private func drawFrame(_ frame: FrameData, originX: Double, originY: Double) {
-        let context = NSGraphicsContext.current?.cgContext
+    private func fill(_ context: CGContext, _ rect: CGRect, color: UInt32,
+                      alpha: CGFloat) {
+        context.setFillColor(
+            red: CGFloat((color >> 16) & 255) / 255,
+            green: CGFloat((color >> 8) & 255) / 255,
+            blue: CGFloat(color & 255) / 255,
+            alpha: alpha)
+        context.fill(rect)
+    }
+
+    private func stroke(_ context: CGContext, _ rect: CGRect, color: UInt32,
+                        alpha: CGFloat) {
+        context.setStrokeColor(
+            red: CGFloat((color >> 16) & 255) / 255,
+            green: CGFloat((color >> 8) & 255) / 255,
+            blue: CGFloat(color & 255) / 255,
+            alpha: alpha)
+        context.stroke(rect)
+    }
+
+    private func drawFrame(_ frame: FrameData, context: CGContext,
+                           originX: Double, originY: Double) {
+        let ascent = fontBaselineOffset()
         for (index, cell) in frame.cells.enumerated() where !cell.skip {
             guard !cell.symbol.isEmpty, cell.symbol != " " else { continue }
-            let col = index % Int(frame.width)
-            let row = index / Int(frame.width)
             let line = shapedLine(symbol: cell.symbol, styleKey: theme.shapeKey(cell))
-            context?.textPosition = CGPoint(
-                x: CGFloat(originX + Double(col) * cellWidth),
-                y: CGFloat(originY + Double(row) * cellHeight + fontBaselineOffset()))
-            CTLineDraw(line, context!)
+            let position = CGPoint(
+                x: CGFloat(originX + Double(index % Int(frame.width)) * cellWidth),
+                y: CGFloat(originY + Double(index / Int(frame.width)) * cellHeight))
+            context.saveGState()
+            context.textMatrix = CGAffineTransform.identity
+            context.translateBy(x: position.x, y: position.y + ascent)
+            context.scaleBy(x: 1, y: -1)
+            CTLineDraw(line, context)
+            context.restoreGState()
         }
-    }
-
-    private func fillDecoration(col: Int, row: Int, y: Double, color: UInt32) {
-        NSColor(rgb: color).setFill()
-        NSRect(x: Double(col) * cellWidth, y: Double(row) * cellHeight + y,
-               width: cellWidth, height: 1).fill()
     }
 
     private func fontBaselineOffset() -> Double {
