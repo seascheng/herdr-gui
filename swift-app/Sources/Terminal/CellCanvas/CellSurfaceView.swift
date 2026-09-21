@@ -192,6 +192,11 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     var cursorBlinks = false
     private var blinkPhase = true
     private var blinkTimer: Timer?
+    /// Self-tracked focus: with NSTextInputClient active, the window's
+    /// firstResponder is the INPUT CONTEXT, not this view — asking the
+    /// window never reports us as focused.
+    private var viewHasFocus = false
+    private var blinkRunning = false
 
     /// Shaped lines keyed by row CONTENT (not index): scrolling moves row
     /// content between indices, so content addressing keeps the hits.
@@ -411,18 +416,26 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     // MARK: Cursor blink
 
-    /// Starts/stops the blink timer for the current config + focus.
+    /// Idempotent refresh: starts/stops the timer only when eligibility
+    /// changes (surface updates arrive continuously; restarting each time
+    /// would pin the phase visible and the cursor would never blink).
     private func updateBlinkTimer() {
+        let shouldBlink = cursorBlinks
+            && viewHasFocus
+            && window?.isKeyWindow == true
+            && (surface?.frame.cursor?.visible ?? false)
+        if Self.imeDebug {
+            epDbg("blink eligible=\(shouldBlink) cfg=\(cursorBlinks) "
+                + "focus=\(viewHasFocus) key=\(window?.isKeyWindow ?? false) "
+                + "cursor=\(surface?.frame.cursor?.visible ?? false)")
+        }
+        guard shouldBlink != blinkRunning else { return }
+        blinkRunning = shouldBlink
         blinkTimer?.invalidate()
         blinkTimer = nil
         blinkPhase = true
-        guard cursorBlinks, let cursor = surface?.frame.cursor,
-              cursor.visible, window?.isKeyWindow == true,
-              (window?.firstResponder as? NSView) === self
-        else {
-            setNeedsDisplay(cursorDrawRect())
-            return
-        }
+        setNeedsDisplay(cursorDrawRect())
+        guard shouldBlink else { return }
         let timer = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.blinkPhase.toggle()
@@ -450,13 +463,13 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok { updateBlinkTimer() }
+        if ok { viewHasFocus = true; updateBlinkTimer() }
         return ok
     }
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
-        if ok { updateBlinkTimer() }
+        if ok { viewHasFocus = false; updateBlinkTimer() }
         return ok
     }
 
