@@ -16,9 +16,11 @@ TEST_SOURCES=(
     Sources/Herdr/Endpoint/EndpointClient.swift
     Sources/Infra/UnixSocket.swift
     Sources/Terminal/CellCanvas/CellTheme.swift
+    Sources/Terminal/CellCanvas/CellInputMapper.swift
 
     Tests/TestMain.swift
     Tests/CellThemeTests.swift
+    Tests/CellInputMapperTests.swift
     Tests/EndpointSessionTests.swift
     Tests/EndpointHandshakeTests.swift
     Tests/EndpointWireTests.swift
