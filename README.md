@@ -25,14 +25,15 @@
 - **Agent-aware sidebar** — 15 agent CLIs with icons, live status dots, a cwd/title second line per agent, one click to jump to its tab
 - **Your Ghostty look, without Ghostty** — theme files, font family/size, line-height ratio, `window-padding`, `cursor-style`(+blink) are parsed from your Ghostty config; the theme picker lists your whole Ghostty theme library. Nothing from Ghostty ships in the app
 - **Tiny** — a single ~0.9 MB stripped binary, no vendored dylibs (the previous mirror-era build carried two 17.6 MB libghostty copies)
-- **Native text input** — proper `NSTextInputClient`: CJK IME composition (marked text, candidate confirm), inline marked-text rendering, blink that pauses on type
+- **Daemon auto-start** — if nothing listens on the local herdr socket, the app starts `herdr server` for you; the daemon outlives the app
+- **Native text input** — proper `NSTextInputClient`: CJK IME composition owns keys during marked text (Enter confirms candidates, never leaks to the shell), cursor blink that resets on type
 
 ## What's inside
 
 | | |
 |---|---|
 | **Protocol** | vendored endpoint gen1 wire (bincode 2, framed) from herdr upstream · handshake fail-closed on generation/codec mismatch · snapshot channel (JSON in `endpointControl`) · baseline surface patches applied atomically · single-lane API requests (`tab.focus`, `pane.split`, `layout.set_split_ratio`, …) |
-| **Rendering** | `CellSurfaceView`: one CTLine per row, kern-pinned to the cell grid (~120× fewer draw calls) · content-keyed row-line cache (~440 fps on scroll floods, M1 Pro) · row-level dirty rects · named/indexed/RGB colors with reverse/dim/hidden blending · DECSCUSR cursor shapes (Ghostty `cursor-style` override + `cursor-style-blink`, 600 ms phase) · hyperlinks (hover + ⌘-click) · streaming pane-scoped selection + copy · centered popup overlay · inline IME marked text |
+| **Rendering** | `CellSurfaceView`: one CTLine per row, kern-pinned to the cell grid (~120× fewer draw calls) · content-keyed row-line cache (~440 fps on scroll floods, M1 Pro) · row-level dirty rects · named/indexed/RGB colors with reverse/dim/hidden blending · DECSCUSR cursor shapes (Ghostty `cursor-style` override + `cursor-style-blink`, 600 ms phase) · hyperlinks (hover + ⌘-click) · streaming pane-scoped selection + copy · centered popup overlay |
 | **Splits** | ⌘D / ⇧⌘D create · right-click pane menu (split / zoom / close) · drag dividers (`layout.set_split_ratio`, 33 ms throttle) · ⌘⌥-arrows navigate |
 | **Chrome** | workspaces-over-agents sidebar · tab strip with inline rename & close · ⌘, settings (daemon config.toml + GUI theme picker) · Ghostty `window-padding-x/y` respected around the grid |
 | **Input** | semantic `ClientPaneInputEvent`: keys, IME text commits, mouse, wheel (fractional accumulator), paste — all pane-relative cells; the daemon decides scrollback/alternate-screen/app-mouse policy |
@@ -58,7 +59,7 @@ running [herdr](https://herdr.dev) server **0.9.0 or newer**:
 ```sh
 cd swift-app
 ./build.sh            # optimized binary → swift-app/herdr-gui
-./package.sh 0.2.0    # → dist/Herdr.app + dist/Herdr-0.2.0.zip (ad-hoc signed)
+./package.sh 0.3.0    # → dist/Herdr.app + dist/Herdr-0.3.0.zip (ad-hoc signed)
 ```
 
 No external frameworks or vendored dylibs — AppKit + CoreText only.
