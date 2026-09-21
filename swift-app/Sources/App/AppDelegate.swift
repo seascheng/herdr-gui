@@ -23,13 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum Session {
         case herdr(HerdrPageController)
         case terminal(TerminalPageController)
-        case connecting(ConnectingView)
 
         var spec: SessionSpec {
             switch self {
             case .herdr(let page): return page.spec
             case .terminal(let page): return page.spec
-            case .connecting(let view): return view.spec
             }
         }
 
@@ -37,7 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .herdr(let page): return page.view
             case .terminal(let page): return page.view
-            case .connecting(let view): return view
             }
         }
 
@@ -45,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .herdr(let page): return page.keyView
             case .terminal(let page): return page.keyView
-            case .connecting: return nil
             }
         }
 
@@ -53,7 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .herdr(let page): return page.surfaceView
             case .terminal(let page): return page.surfaceView
-            case .connecting: return nil
             }
         }
 
@@ -61,7 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .herdr(let page): page.focusTerminal()
             case .terminal(let page): page.focusTerminal()
-            case .connecting: break
             }
         }
 
@@ -69,7 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch self {
             case .herdr(let page): page.shutdown()
             case .terminal(let page): page.shutdown()
-            case .connecting: break
             }
         }
     }
@@ -79,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionBar: SessionBarView?
     private var pageContainer: NSView?
     private var focusMonitor: Any?
-    private var tunnels: [String: SSHTunnel] = [:]  // spec.id → tunnel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         keepAliveDelegate = self
@@ -295,44 +287,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .local where spec.wantsHerdr:
             append(.herdr(HerdrPageController(
                 spec: spec,
-                apiSocketPath: HerdrAPI.defaultSocketPath,
-                clientSocketPath: HerdrAPI.defaultClientSocketPath)))
+                clientSocketPath: HerdrPageController.defaultClientSocketPath)))
         case .local:
             append(.terminal(TerminalPageController(spec: spec)))
         case .ssh(let alias) where spec.wantsHerdr:
-            let connecting = ConnectingView(spec: spec)
-            append(.connecting(connecting))
-            let tunnel = SSHTunnel(alias: alias)
-            tunnels[spec.id] = tunnel
-            tunnel.start { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .success(let endpoints):
-                    guard let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id })
-                    else {
-                        self.teardownTunnel(spec.id)
-                        return
-                    }
-                    let page = HerdrPageController(
-                        spec: spec,
-                        apiSocketPath: endpoints.apiSocket,
-                        clientSocketPath: endpoints.clientSocket)
-                    self.replaceSession(at: index, with: .herdr(page))
-                case .failure(let error):
-                    HerdrLog.error("tunnel \(alias): \(error.localizedDescription)")
-                    // closeSession tears the tunnel when the session is
-                    // still open; otherwise do it here.
-                    if let index = self.sessions.firstIndex(where: { $0.spec.id == spec.id }) {
-                        self.closeSession(at: index)
-                    } else {
-                        self.teardownTunnel(spec.id)
-                    }
-                    let alert = NSAlert()
-                    alert.messageText = "Could not connect to \(alias)"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
-                }
-            }
+            // Remote herdr needs the 0.9+ `remote-client-bridge` transport
+            // (Phase 2); the old v19 streamlocal tunnel is gone with the
+            // mirror. Plain ssh terminal pages still work.
+            let alert = NSAlert()
+            alert.messageText = "\(alias): remote herdr needs herdr 0.9+"
+            alert.informativeText =
+                "Remote herdr pages move to herdr's remote-client-bridge in " +
+                "the next release. Use a plain ssh terminal page for now."
+            alert.runModal()
         case .ssh:
             append(.terminal(TerminalPageController(spec: spec)))
         }
@@ -376,10 +343,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // session (including local Terminal pages) can be closed.
         let spec = sessions[index].spec
         guard !(spec.target == .local && spec.wantsHerdr) else { return }
-        let specId = sessions[index].spec.id
         sessions[index].shutdown()
         sessions.remove(at: index)
-        teardownTunnel(specId)
 
         if index == activeIndex {
             activate(min(index, sessions.count - 1))
@@ -387,11 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activeIndex -= 1
             renderSessionBar()
         }
-    }
-
-    private func teardownTunnel(_ specId: String) {
-        tunnels[specId]?.shutdown()
-        tunnels[specId] = nil
     }
 
     private func renderSessionBar() {
@@ -574,76 +534,6 @@ final class StableWindow: NSWindow {
     }
 }
 
-// MARK: - connecting placeholder page
-/// Loading status page while an ssh herdr tunnel dials (herdr-gui's
-/// ServerStatusView rhythm): antenna glyph, title, sub-copy, spinner.
-/// Keeps the session tab alive (and closable) before endpoints are up.
-final class ConnectingView: NSView {
-    let spec: SessionSpec
-    private let spinner = NSProgressIndicator()
-
-    init(spec: SessionSpec) {
-        self.spec = spec
-        super.init(frame: .zero)
-        wantsLayer = true
-
-        let icon = NSImageView(image: NSImage(
-            systemSymbolName: "antenna.radiowaves.left.and.right",
-            accessibilityDescription: nil) ?? NSImage())
-        icon.contentTintColor = Chrome.theme.secondaryText
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        let title = NSTextField(labelWithString: "Connecting to \"\(spec.label)\"…")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
-        title.textColor = Chrome.theme.foreground
-        title.translatesAutoresizingMaskIntoConstraints = false
-
-        let sub = NSTextField(labelWithString: "Forwarding the server's herdr sockets over SSH.")
-        sub.font = .systemFont(ofSize: 12)
-        sub.textColor = Chrome.theme.secondaryText
-        sub.translatesAutoresizingMaskIntoConstraints = false
-
-        spinner.style = .spinning
-        spinner.controlSize = .regular
-        spinner.startAnimation(nil)
-        spinner.translatesAutoresizingMaskIntoConstraints = false
-
-        // Edge-anchored like every other page (centered column inside a
-        // pinned container), so the page has a well-determined layout
-        // instead of floating content that fits at 0×0.
-        let column = NSView(frame: .zero)
-        column.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(column)
-        column.addSubview(icon)
-        column.addSubview(title)
-        column.addSubview(sub)
-        column.addSubview(spinner)
-
-        NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: trailingAnchor),
-            column.topAnchor.constraint(equalTo: topAnchor),
-            column.bottomAnchor.constraint(equalTo: bottomAnchor),
-            icon.centerXAnchor.constraint(equalTo: column.centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: column.centerYAnchor, constant: -45),
-            icon.widthAnchor.constraint(equalToConstant: 40),
-            icon.heightAnchor.constraint(equalToConstant: 40),
-            title.centerXAnchor.constraint(equalTo: column.centerXAnchor),
-            title.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 12),
-            sub.centerXAnchor.constraint(equalTo: column.centerXAnchor),
-            sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
-            spinner.centerXAnchor.constraint(equalTo: column.centerXAnchor),
-            spinner.topAnchor.constraint(equalTo: sub.bottomAnchor, constant: 18),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
-
-    override func draw(_ dirtyRect: NSRect) {
-        Chrome.theme.background.setFill()
-        bounds.fill()
-    }
-}
 
 extension AppDelegate {
     static func main() {
