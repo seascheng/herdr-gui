@@ -1694,7 +1694,7 @@ extension Ghostty {
             // UserNotifications completes on an arbitrary queue. Hop once to
             // the main actor before touching SurfaceView state.
             UNUserNotificationCenter.current().add(request) { [weak self] error in
-                Task { @MainActor in
+                _ = Task { @MainActor in
                     if let error {
                         HerdrLog.error("Error scheduling user notification: \(error)")
                         return

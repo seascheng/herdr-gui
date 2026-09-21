@@ -120,20 +120,9 @@ class SurfaceScrollView: NSView {
             self?.handleScrollerStyleChange()
         })
 
-        // Listen for frame change events on macOS 26.0. See the docstring for
-        // handleFrameChangeForNSScrollPocket for why this is necessary.
-        if #unavailable(macOS 26.1) { if #available(macOS 26.0, *) {
-            observers.append(NotificationCenter.default.addObserver(
-                forName: NSView.frameDidChangeNotification,
-                object: nil,
-                // Since this observer is used to immediately override the event
-                // that produced the notification, we let it run synchronously on
-                // the posting thread.
-                queue: nil
-            ) { [weak self] notification in
-                self?.handleFrameChangeForNSScrollPocket(notification)
-            })
-        }}
+        // (macOS 26.0-only NSScrollPocket workaround removed: this build's
+        // deployment target is ≥26.1, where the notification observer and
+        // the now-unavailable handleFrameChangeForNSScrollPocket are dead.)
 
         // Listen for derived config changes to update scrollbar settings live
         surfaceView.$derivedConfig

@@ -13,6 +13,7 @@ TEST_SOURCES=(
     Sources/Herdr/Endpoint/EndpointWire.swift
     Sources/Herdr/Endpoint/EndpointHandshake.swift
     Sources/Herdr/Endpoint/EndpointSession.swift
+    Sources/Herdr/Endpoint/EndpointClient.swift
     Sources/Infra/UnixSocket.swift
 
     Tests/TestMain.swift
