@@ -90,6 +90,32 @@ enum CellSurfaceLogic {
         let y = Double(mainRows - popupRows) * cellHeight / 2
         return (max(x, 0), max(y, 0))
     }
+
+    /// Split divider under a point (hit rects are in surface cells).
+    static func splitHit(atX x: Double, atY y: Double, cellWidth: Double,
+                         cellHeight: Double,
+                         splits: [PaneSurfaceSplit]) -> PaneSurfaceSplit? {
+        guard cellWidth > 0, cellHeight > 0 else { return nil }
+        let col = x / cellWidth
+        let row = y / cellHeight
+        return splits.first { split in
+            let r = split.hitRect
+            return col >= Double(r.x)
+                && col < Double(Int(r.x) + Int(r.width))
+                && row >= Double(r.y)
+                && row < Double(Int(r.y) + Int(r.height))
+        }
+    }
+
+    /// Divider drag ratio: pointer position along the split's area minus
+    /// the initial grab offset, clamped to 0...1 (herdr TUI mouse.rs).
+    static func splitRatio(pointerCells: Double, areaOrigin: Double,
+                           areaLength: Double, grabOffset: Double) -> Double {
+        guard areaLength > 0 else { return 0.5 }
+        let ratio = (pointerCells - areaOrigin - grabOffset) / areaLength
+        return min(max(ratio, 0), 1)
+    }
+
     /// First/last cell with visible content inside a span; nil when the
     /// whole span is blank. Selection highlight and copy snap to this, so
     /// dragging over empty space selects nothing visible.
@@ -149,6 +175,10 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     /// Click-to-focus: endpoint focus is a `pane.focus` request, not a
     /// synthesized TUI click (herdr-gpui semantics).
     var onFocusPane: ((String) -> Void)?
+    /// Generic request lane (split create/navigate, divider drag resize).
+    var onRequest: ((String, [String: Any]) -> Void)?
+    /// Focused tab id from the latest snapshot (divider resize targets it).
+    var contextTabId: String?
 
     private(set) var surface: PaneSurfaceFrame?
     private var font: NSFont
@@ -177,6 +207,11 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     private var selectionBounds: (x0: Int, x1: Int, y0: Int, y1: Int)?
     private var isDraggingSelection = false
     private var mouseDownPane: String?
+    /// Active divider drag: split path + geometry + grab offset (TUI
+    /// semantics: ratio requests throttled to 33 ms).
+    private var dragSplit: (path: [Bool], area: SurfaceRect,
+                            horizontal: Bool, grabOffset: Double,
+                            lastSent: Date)?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -668,6 +703,24 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             onOpenURL?(url)
             return
         }
+        // Divider drag: hit rects first, before pane hit-testing.
+        if surface.popup == nil,
+           let split = CellSurfaceLogic.splitHit(
+               atX: Double(point.x), atY: Double(point.y),
+               cellWidth: cellWidth, cellHeight: cellHeight,
+               splits: surface.splits) {
+            let horizontal = split.direction == .horizontal
+            let pointerCells = horizontal
+                ? Double(point.x) / cellWidth : Double(point.y) / cellHeight
+            let divider = horizontal
+                ? Double(split.area.x + split.pos)
+                : Double(split.area.y + split.pos)
+            dragSplit = (split.path, split.area, horizontal,
+                         pointerCells - divider, .distantPast)
+            selectionAnchor = nil
+            selectionHead = nil
+            return
+        }
         // Selection lives inside one pane's inner rect (borders excluded).
         let paneId = CellSurfaceLogic.paneId(atX: Double(point.x),
                                              atY: Double(point.y),
@@ -724,6 +777,22 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let drag = dragSplit {
+            let pointerCells = drag.horizontal
+                ? Double(point.x) / cellWidth : Double(point.y) / cellHeight
+            let ratio = CellSurfaceLogic.splitRatio(
+                pointerCells: pointerCells,
+                areaOrigin: drag.horizontal ? Double(drag.area.x) : Double(drag.area.y),
+                areaLength: Double(drag.horizontal ? drag.area.width : drag.area.height),
+                grabOffset: drag.grabOffset)
+            let now = Date()
+            guard now.timeIntervalSince(drag.lastSent) >= 0.033 else { return }
+            dragSplit?.lastSent = now
+            var params: [String: Any] = ["path": drag.path, "ratio": ratio]
+            if let tabId = contextTabId { params["tab_id"] = tabId }
+            onRequest?("layout.set_split_ratio", params)
+            return
+        }
         if isDraggingSelection, let bounds = selectionBounds {
             let cell = CellSurfaceLogic.clampedCell(
                 x: Double(point.x), y: Double(point.y),
@@ -737,6 +806,7 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        dragSplit = nil
         // A zero-extent single click is focus/select-none, not a selection.
         if event.clickCount < 2,
            let anchor = selectionAnchor, let head = selectionHead,
@@ -758,6 +828,19 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         if url != hoverLinkURL {
             hoverLinkURL = url
             needsDisplay = true
+        }
+        if let surface, surface.popup == nil,
+           let split = CellSurfaceLogic.splitHit(
+               atX: Double(point.x), atY: Double(point.y),
+               cellWidth: cellWidth, cellHeight: cellHeight,
+               splits: surface.splits) {
+            if split.direction == .horizontal {
+                NSCursor.resizeLeftRight.set()
+            } else {
+                NSCursor.resizeUpDown.set()
+            }
+        } else {
+            NSCursor.arrow.set()
         }
     }
 
@@ -845,8 +928,25 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     // MARK: Key equivalents (copy/paste)
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.modifierFlags.contains(.command),
-              let key = event.charactersIgnoringModifiers else { return false }
+        let flags = event.modifierFlags
+        let key = event.charactersIgnoringModifiers ?? ""
+        // Cmd-D / Cmd-Shift-D: split right / down (herdr-gpui bindings).
+        if flags.contains(.command), !flags.contains(.option), key == "d" {
+            onRequest?("pane.split", ["direction": flags.contains(.shift) ? "down" : "right",
+                                      "focus": true])
+            return true
+        }
+        // Cmd-Option-Arrows: focus the neighboring pane.
+        if flags.contains(.command), flags.contains(.option) {
+            switch event.keyCode {
+            case 123: onRequest?("pane.focus_direction", ["direction": "left"]); return true
+            case 124: onRequest?("pane.focus_direction", ["direction": "right"]); return true
+            case 125: onRequest?("pane.focus_direction", ["direction": "down"]); return true
+            case 126: onRequest?("pane.focus_direction", ["direction": "up"]); return true
+            default: break
+            }
+        }
+        guard flags.contains(.command) else { return false }
         if key == "c", selectionAnchor != nil {
             copy(self)
             return true

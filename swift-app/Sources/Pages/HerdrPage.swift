@@ -147,6 +147,9 @@ final class HerdrPageController {
         canvas.onFocusPane = { [weak self] paneId in
             self?.request("pane.focus", ["pane_id": paneId])
         }
+        canvas.onRequest = { [weak self] method, params in
+            self?.request(method, params)
+        }
     }
 
     private func wireClient() {
@@ -244,6 +247,7 @@ final class HerdrPageController {
         let tabs = state.tabsByWorkspace[state.focusedWorkspaceId ?? ""] ?? []
         let focused = state.focusedTabId ?? tabs.first?.tabId ?? ""
         focusedTabId = focused
+        canvas.contextTabId = state.focusedTabId
         sidebar?.render(
             workspaces: state.workspaces.map(Self.sidebarWorkspace),
             focusedWorkspaceId: state.focusedWorkspaceId,

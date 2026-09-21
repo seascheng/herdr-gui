@@ -157,6 +157,39 @@ enum CellSurfaceLogicTests {
                 cells: cells, width: width, row: 0, from: 0, to: 19)
             expect(blank == nil, "blank span is nil")
         }
-        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7, "registration")
+        let ok8 = TestRegistry.add("surface: split hit-test and drag ratio") {
+            let splits = [
+                PaneSurfaceSplit(direction: .horizontal, pos: 40,
+                                 area: SurfaceRect(x: 0, y: 0, width: 80, height: 24),
+                                 hitRect: SurfaceRect(x: 39, y: 0, width: 3, height: 24),
+                                 path: [false]),
+                PaneSurfaceSplit(direction: .vertical, pos: 12,
+                                 area: SurfaceRect(x: 0, y: 0, width: 80, height: 24),
+                                 hitRect: SurfaceRect(x: 0, y: 11, width: 80, height: 3),
+                                 path: [true]),
+            ]
+            // Horizontal divider (x-axis) hit at col 40.
+            let hHit = CellSurfaceLogic.splitHit(atX: 40.5 * 9, atY: 100,
+                                                 cellWidth: 9, cellHeight: 17,
+                                                 splits: splits)
+            expectEq(hHit?.direction, PaneSurfaceSplitDirection.horizontal, "h hit")
+            // Miss outside hit rects.
+            expect(CellSurfaceLogic.splitHit(atX: 10 * 9, atY: 100, cellWidth: 9,
+                                             cellHeight: 17, splits: splits) == nil,
+                   "no hit mid-pane")
+            // Ratio: grab at divider, drag to 25% of an 80-wide area.
+            let ratio = CellSurfaceLogic.splitRatio(pointerCells: 20, areaOrigin: 0,
+                                                    areaLength: 80, grabOffset: 0)
+            expectEq(ratio, 0.25, "ratio 25%")
+            // Grab offset keeps the divider under the fingers.
+            let grabbed = CellSurfaceLogic.splitRatio(pointerCells: 50, areaOrigin: 0,
+                                                      areaLength: 80, grabOffset: 30)
+            expectEq(grabbed, 0.25, "ratio with grab offset")
+            // Clamped to 0...1.
+            let clamped = CellSurfaceLogic.splitRatio(pointerCells: 500, areaOrigin: 0,
+                                                      areaLength: 80, grabOffset: 0)
+            expectEq(clamped, 1.0, "ratio clamp")
+        }
+        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8, "registration")
     }
 }
