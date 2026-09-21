@@ -12,8 +12,11 @@ TEST_SOURCES=(
     Sources/Infra/BincodeReader.swift
     Sources/Herdr/Endpoint/EndpointWire.swift
     Sources/Herdr/Endpoint/EndpointHandshake.swift
+    Sources/Herdr/Endpoint/EndpointSession.swift
+    Sources/Infra/UnixSocket.swift
 
     Tests/TestMain.swift
+    Tests/EndpointSessionTests.swift
     Tests/EndpointHandshakeTests.swift
     Tests/EndpointWireTests.swift
     Tests/FixtureTests.swift
