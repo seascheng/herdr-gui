@@ -186,6 +186,8 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     private var italicFont: NSFont
     private(set) var cellWidth: Double = 8
     private(set) var cellHeight: Double = 17
+    /// Ghostty `cursor-style` override (nil = follow the server's shape).
+    var cursorShapeOverride: UInt8?
 
     /// Shaped lines keyed by row CONTENT (not index): scrolling moves row
     /// content between indices, so content addressing keeps the hits.
@@ -232,28 +234,73 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
+    /// herdr-gpui's metric recipe: cell height = font size × 20/14
+    /// (1.43×), deliberately NOT the font's own ascent+descent — CJK
+    /// families like "Maple Mono NF CN" carry inflated metrics that would
+    /// blow up line spacing. The font is vertically centered in the cell.
     private func measureCells() {
-        let ctFont = font as CTFont
-        let ascent = CTFontGetAscent(ctFont)
-        let descent = CTFontGetDescent(ctFont)
-        cellHeight = Double(ascent + descent).rounded(.up)
+        let size = Double(font.pointSize)
+        cellHeight = (size * 20.0 / 14.0).rounded()
         let attrs: [NSAttributedString.Key: Any] = [.font: font]
         let line = CTLineCreateWithAttributedString(
             NSAttributedString(string: "M", attributes: attrs))
         let width = Double(CTLineGetTypographicBounds(line, nil, nil, nil))
         cellWidth = max(width.rounded(.up), 1)
-        rowLines.removeAll()
-        previousRows = []
-        symbolAdvances.removeAll()
+        invalidateStyle()
         scheduleResize()
     }
 
-    func setFontSize(_ point: Double) {
-        font = NSFont.monospacedSystemFont(ofSize: point, weight: .regular)
-        boldFont = NSFont.monospacedSystemFont(ofSize: point, weight: .bold)
-        italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-        measureCells()
+    /// Baseline offset that centers the glyph band inside the cell
+    /// (Ghostty's "font centered vertically" behavior).
+    private var baselineOffsetCache: (font: NSObject, offset: Double)?
+    private func centeredBaseline() -> Double {
+        let ctFont = font as CTFont
+        let ascent = Double(CTFontGetAscent(ctFont))
+        let descent = Double(CTFontGetDescent(ctFont))
+        let natural = ascent + descent
+        let centering = max(cellHeight - natural, 0) / 2
+        return (centering + ascent).rounded(.down)
+    }
+
+    /// Style-level invalidation (theme colors, font): shaped rows carry
+    /// baked-in colors, so they must be rebuilt.
+    func invalidateStyle() {
+        rowLines.removeAll()
+        previousRows = []
+        symbolAdvances.removeAll()
         needsDisplay = true
+    }
+
+    func setFontSize(_ point: Double) {
+        applyFont(family: nil, size: point, adjustCellHeight: 0)
+    }
+
+    /// Font from the Ghostty config: family (e.g. "Maple Mono NF CN") and
+    /// size. Falls back to the system monospace when the family cannot be
+    /// resolved. adjust-cell-height is intentionally not applied (the
+    /// fixed 20/14 line-height ratio replaces it).
+    func applyFont(family: String?, size: CGFloat, adjustCellHeight: CGFloat) {
+        var base: NSFont
+        if let family {
+            let matched = CTFontCreateWithName(family as CFString, size, nil) as NSFont
+            // Unresolvable names come back as the last-resort font; only
+            // accept a real family match.
+            let familyName = (matched.familyName ?? "").lowercased()
+            if !familyName.isEmpty
+                && familyName != "lastresort"
+                && (familyName.contains(family.lowercased().prefix(6))
+                    || family.lowercased().contains(familyName.prefix(6))) {
+                base = matched
+            } else {
+                base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            }
+        } else {
+            base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        font = base
+        boldFont = NSFontManager.shared.convert(base, toHaveTrait: .boldFontMask)
+        italicFont = NSFontManager.shared.convert(base, toHaveTrait: .italicFontMask)
+        measureCells()
     }
 
     // MARK: Surface updates (main thread)
@@ -401,8 +448,9 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         }
         if let cursor = frame.cursor, cursor.visible,
            cursor.x < frame.width, cursor.y < frame.height {
+            let shape = cursorShapeOverride ?? cursor.shape
             let rect = CellSurfaceLogic.cursorRect(
-                x: cursor.x, y: cursor.y, shape: cursor.shape,
+                x: cursor.x, y: cursor.y, shape: shape,
                 cellWidth: cellWidth, cellHeight: cellHeight)
             fill(context, CGRect(x: rect.x, y: rect.y, width: rect.w, height: rect.h),
                  color: theme.cursor, alpha: 0.5)
@@ -588,7 +636,7 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     }
 
     private func fontBaselineOffset() -> Double {
-        Double(CTFontGetAscent(font as CTFont)).rounded(.down)
+        centeredBaseline()
     }
 
     // MARK: Selection (streaming, pane-constrained)

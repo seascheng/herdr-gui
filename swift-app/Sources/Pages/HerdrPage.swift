@@ -58,10 +58,14 @@ final class HerdrPageController {
         }
     }
 
-    /// Live theme switch: canvas palette + glyph caches rebuilt.
+    /// Live theme switch: canvas palette + font/cursor config with it.
     private func applyTheme(_ theme: CellTheme) {
+        let font = GhosttyThemes.fontConfig()
         canvas.theme = theme
-        canvas.needsDisplay = true
+        canvas.applyFont(family: font.family, size: font.size,
+                         adjustCellHeight: font.adjustCellHeight)
+        canvas.cursorShapeOverride = font.cursorShape
+        canvas.invalidateStyle()  // shaped rows carry baked-in colors
     }
 
     private func buildUI() {

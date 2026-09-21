@@ -190,6 +190,16 @@ enum CellSurfaceLogicTests {
                                                       areaLength: 80, grabOffset: 0)
             expectEq(clamped, 1.0, "ratio clamp")
         }
-        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8, "registration")
+        let ok9 = TestRegistry.add("surface: herdr-gpui line-height ratio") {
+            // 14pt -> 20px cells; other sizes scale by 20/14.
+            func height(_ size: Double) -> Double {
+                (size * 20.0 / 14.0).rounded()
+            }
+            expectEq(height(14), 20, "14pt")
+            expectEq(height(12), 17, "12pt")
+            expectEq(height(16), 23, "16pt")
+        }
+        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9,
+               "registration")
     }
 }

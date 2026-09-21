@@ -97,6 +97,63 @@ enum GhosttyThemes {
         return UInt32(parsed) & 0xffffff
     }
 
+    // MARK: Ghostty config → font + cursor
+
+    struct FontConfig {
+        var family: String?
+        var size: CGFloat
+        var adjustCellHeight: CGFloat
+        var thicken: Bool
+        /// DECSCUSR-equivalent shape override: nil = follow the server.
+        var cursorShape: UInt8?
+    }
+
+    /// The config the GUI follows: our app-support copy first (seeded from
+    /// the live Ghostty), then the live configs.
+    static func configText() -> String? {
+        let home = NSHomeDirectory()
+        let candidates = [
+            home + "/Library/Application Support/herdr-gui/ghostty/config",
+            home + "/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
+            home + "/.config/ghostty/config",
+        ]
+        for path in candidates {
+            if let text = try? String(contentsOfFile: path, encoding: .utf8) {
+                return text
+            }
+        }
+        return nil
+    }
+
+    static func fontConfig() -> FontConfig {
+        var config = FontConfig(family: nil, size: 14, adjustCellHeight: 0,
+                                thicken: false, cursorShape: nil)
+        guard let text = configText() else { return config }
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            switch key {
+            case "font-family": config.family = value
+            case "font-size": config.size = CGFloat(Double(value) ?? 14)
+            case "adjust-cell-height":
+                config.adjustCellHeight = CGFloat(Double(value) ?? 0)
+            case "font-thicken": config.thicken = value == "true"
+            case "cursor-style":
+                switch value {
+                case "bar": config.cursorShape = 6
+                case "underline": config.cursorShape = 4
+                case "block": config.cursorShape = 0
+                default: break
+                }
+            default: break
+            }
+        }
+        return config
+    }
+
     // MARK: Current theme (GUI-local preference)
 
     private static let themeKey = "cellThemeName"
