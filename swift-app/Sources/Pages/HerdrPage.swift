@@ -65,6 +65,7 @@ final class HerdrPageController {
         canvas.applyFont(family: font.family, size: font.size,
                          adjustCellHeight: font.adjustCellHeight)
         canvas.cursorShapeOverride = font.cursorShape
+        canvas.cursorBlinks = font.cursorBlink
         canvas.invalidateStyle()  // shaped rows carry baked-in colors
     }
 

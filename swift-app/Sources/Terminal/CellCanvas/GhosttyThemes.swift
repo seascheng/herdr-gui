@@ -106,6 +106,7 @@ enum GhosttyThemes {
         var thicken: Bool
         /// DECSCUSR-equivalent shape override: nil = follow the server.
         var cursorShape: UInt8?
+        var cursorBlink: Bool
     }
 
     /// The config the GUI follows: our app-support copy first (seeded from
@@ -127,7 +128,7 @@ enum GhosttyThemes {
 
     static func fontConfig() -> FontConfig {
         var config = FontConfig(family: nil, size: 14, adjustCellHeight: 0,
-                                thicken: false, cursorShape: nil)
+                                thicken: false, cursorShape: nil, cursorBlink: true)
         guard let text = configText() else { return config }
         for line in text.split(separator: "\n") {
             let parts = line.split(separator: "=", maxSplits: 1)
@@ -148,6 +149,7 @@ enum GhosttyThemes {
                 case "block": config.cursorShape = 0
                 default: break
                 }
+            case "cursor-style-blink": config.cursorBlink = value == "true"
             default: break
             }
         }

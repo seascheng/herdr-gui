@@ -188,6 +188,10 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     private(set) var cellHeight: Double = 17
     /// Ghostty `cursor-style` override (nil = follow the server's shape).
     var cursorShapeOverride: UInt8?
+    /// Ghostty `cursor-style-blink`: steady-off half-phase toggle.
+    var cursorBlinks = false
+    private var blinkPhase = true
+    private var blinkTimer: Timer?
 
     /// Shaped lines keyed by row CONTENT (not index): scrolling moves row
     /// content between indices, so content addressing keeps the hits.
@@ -334,6 +338,7 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         }
         if rowLines.count > 600 { rowLines.removeAll(keepingCapacity: true) }
         scheduleResize()
+        updateBlinkTimer()
         if ProcessInfo.processInfo.environment["HERDR_DUMP_CELLS"] == "1" {
             dumpCells()
         }
@@ -402,6 +407,62 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     override func layout() {
         super.layout()
         scheduleResize()
+    }
+
+    // MARK: Cursor blink
+
+    /// Starts/stops the blink timer for the current config + focus.
+    private func updateBlinkTimer() {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        blinkPhase = true
+        guard cursorBlinks, let cursor = surface?.frame.cursor,
+              cursor.visible, window?.isKeyWindow == true,
+              (window?.firstResponder as? NSView) === self
+        else {
+            setNeedsDisplay(cursorDrawRect())
+            return
+        }
+        let timer = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.blinkPhase.toggle()
+            self.setNeedsDisplay(self.cursorDrawRect())
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blinkTimer = timer
+    }
+
+    private func cursorDrawRect() -> NSRect {
+        guard let cursor = surface?.frame.cursor, cursor.visible,
+              cursor.x < surface!.frame.width, cursor.y < surface!.frame.height
+        else { return .zero }
+        let rect = CellSurfaceLogic.cursorRect(
+            x: cursor.x, y: cursor.y, shape: cursorShapeOverride ?? cursor.shape,
+            cellWidth: cellWidth, cellHeight: cellHeight)
+        return NSRect(x: rect.x, y: rect.y, width: rect.w + 1, height: rect.h + 1)
+    }
+
+    /// Typing resets the blink to the visible half-phase.
+    func resetCursorBlink() {
+        blinkPhase = true
+        setNeedsDisplay(cursorDrawRect())
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { updateBlinkTimer() }
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { updateBlinkTimer() }
+        return ok
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateBlinkTimer()
     }
 
     // MARK: Drawing
@@ -676,12 +737,20 @@ final class CellSurfaceView: NSView, NSTextInputClient {
     // MARK: Input — keyboard
 
     override func keyDown(with event: NSEvent) {
+        // While an IME composition is active the input method owns every
+        // key: Enter confirms, Esc cancels, arrows navigate candidates.
+        // Leaking Enter to the terminal here confirms nothing upstream.
+        if markedText != nil {
+            interpretKeyEvents([event])
+            return
+        }
         // Printable text and IME go through interpretKeyEvents → insertText
         // → TextCommit; non-printables map to semantic Key events.
         let chars = event.charactersIgnoringModifiers ?? ""
         if let key = CellInputMapper.keyEvent(keyCode: event.keyCode, chars: chars,
                                               modifierFlags: event.modifierFlags,
                                               isRepeat: event.isARepeat) {
+            resetCursorBlink()
             send(key)
             return
         }
@@ -701,8 +770,46 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     func insertText(_ string: Any, replacementRange: NSRange) {
         markedText = nil
+        resetCursorBlink()
         guard let text = string as? String, !text.isEmpty else { return }
         send(.textCommit(text))
+    }
+
+    func doCommandBy(_ selector: Selector) {
+        // No composition: interpret the standard editing commands the
+        // input context emits as semantic key events.
+        switch selector {
+        case #selector(insertNewline(_:)):
+            send(.key(code: .enter, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(cancelOperation(_:)):
+            send(.key(code: .esc, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(deleteBackward(_:)):
+            send(.key(code: .backspace, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(moveLeft(_:)):
+            send(.key(code: .left, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(moveRight(_:)):
+            send(.key(code: .right, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(moveUp(_:)):
+            send(.key(code: .up, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        case #selector(moveDown(_:)):
+            send(.key(code: .down, modifiers: 0, kind: .press, repeatCount: 1,
+                      shiftedCodepoint: nil, generatedText: nil,
+                      tracksRelease: false, physicalKeyId: nil, windowsRecord: nil))
+        default:
+            break
+        }
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange,
