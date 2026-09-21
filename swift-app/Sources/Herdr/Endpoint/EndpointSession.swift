@@ -16,7 +16,6 @@ enum EndpointLimits {
     static let requestTimeout: TimeInterval = 60
     static let readPollInterval: TimeInterval = 0.01
     static let writeTimeout: TimeInterval = 1
-    static let maxFutureSurfaces = 16
     static let maxQueuedCommands = 64
 }
 
@@ -74,7 +73,6 @@ final class EndpointSession {
     private var welcome: EndpointWelcome?
     private var snapshot: ClientShellSnapshot?
     private var surface: PaneSurfaceFrame?
-    private var futureSurfaces: [PaneSurfaceFrame] = []
     private var pending: (id: String, bytes: [UInt8],
                           started: Date, completion: ([String: Any]?) -> Void)?
 
@@ -278,6 +276,7 @@ final class EndpointSession {
                 fail(EndpointSessionError.protocolViolation("decode frame").description)
                 return
             }
+            dbg("msg \(String(describing: Mirror(reflecting: message).children.first?.label ?? "?"))")
             handle(message)
         }
         // Explicit stop: no flush, no replay.
@@ -322,54 +321,70 @@ final class EndpointSession {
         }
 
         switch message {
-        case .clientShellSnapshot(let s):
-            epDbg("handle snapshot rev=\(s.revision)")
-            let bootChanged = snapshot.map { $0.bootId != s.bootId } ?? false
-            snapshot = s
-            if bootChanged {
-                surface = nil
-                futureSurfaces.removeAll()
-            } else if let current = surface,
-                      current.projectionRevision < s.revision {
-                surface = nil  // stale projection; wait for the matching frame
+        case let .endpointControl(kind, data) where kind == endpointSnapshotKind:
+            // The snapshot channel: JSON in an EndpointControl envelope
+            // (herdr-gpui session.rs parity).
+            guard let raw = data.data(using: .utf8),
+                  let next = try? JSONDecoder().decode(
+                      ClientShellSnapshot.self, from: raw)
+            else {
+                fail(EndpointSessionError.protocolViolation("bad snapshot json").description)
+                return
             }
-            emitSnapshot(s)
-            publishMatchingSurfaces()
+            applySnapshot(next)
+
+        case .clientShellSnapshot(let s):
+            // Bincode compat path (wire variant 12); the daemon sends JSON.
+            applySnapshot(s)
 
         case .paneSurface(let frame):
-            do { try frame.frame.validate() }
-            catch {
+            guard let snapshot else {
+                fail(EndpointSessionError.protocolViolation(
+                        "surface before snapshot").description)
+                return
+            }
+            if frame.bootId != snapshot.bootId
+                || surface.map({ frame.surfaceRevision <= $0.surfaceRevision }) == true {
+                fail(EndpointSessionError.protocolViolation("surface identity").description)
+                return
+            }
+            do {
+                try frame.frame.validate()
+                try frame.popup?.frame.validate()
+            } catch {
                 fail(EndpointSessionError.protocolViolation("invalid surface").description)
                 return
             }
-            if matchesSnapshot(frame) {
-                surface = frame
-                emitSurface(frame)
-            } else {
-                futureSurfaces.append(frame)
-                if futureSurfaces.count > EndpointLimits.maxFutureSurfaces {
-                    futureSurfaces.removeFirst()
-                }
-            }
+            let matches = frame.projectionRevision == snapshot.revision
+            surface = frame  // single slot: latest wins, emitted only on match
+            if matches { emitSurface(frame) }
 
         case .paneSurfacePatch(let patch):
-            guard var current = surface else { return }  // awaiting a full frame
+            guard var current = surface else {
+                fail(EndpointSessionError.protocolViolation(
+                        "patch before baseline").description)
+                return
+            }
             do {
                 try current.applyPatch(patch)
-                surface = current
-                emitSurface(current)
             } catch {
                 fail(EndpointSessionError.protocolViolation(
                         "patch rejected: \(error)").description)
+                return
             }
+            surface = current
+            if snapshot.map({ $0.revision == current.projectionRevision }) == true {
+                emitSurface(current)
+            }
+
         case let .clientShellEndpointResponseChunk(bootId, requestId, finalChunk, data):
             guard var pending = pending else {
                 fail(EndpointSessionError.protocolViolation(
                         "response without pending request").description)
                 return
             }
-            guard pending.id == requestId, let snapshot,
-                  bootId == snapshot.bootId else {
+            guard let snapshot, bootId == snapshot.bootId, pending.id == requestId
+            else {
                 fail(EndpointSessionError.protocolViolation(
                         "stale response chunk").description)
                 return
@@ -384,12 +399,20 @@ final class EndpointSession {
                 let object = text.data(using: .utf8).flatMap {
                     (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
                 }
+                if object?["id"] as? String != requestId {
+                    fail(EndpointSessionError.protocolViolation("response id").description)
+                    return
+                }
                 let completion = pending.completion
                 self.pending = nil
                 callbackQueue.async { completion(object) }
             } else {
                 self.pending = pending
             }
+
+        case .serverShutdown(let reason):
+            fail(reason ?? "server shutdown")
+
         case .clientShellError(let message):
             if let pending {
                 let completion = pending.completion
@@ -419,25 +442,25 @@ final class EndpointSession {
         }
     }
 
-    private func matchesSnapshot(_ frame: PaneSurfaceFrame) -> Bool {
-        guard let snapshot else { return false }
-        return frame.bootId == snapshot.bootId
-            && frame.projectionRevision == snapshot.revision
+    /// Snapshot identity (upstream: empty boot or regressing revision
+    /// severs), then emit; a stored future surface re-emits on match.
+    private func applySnapshot(_ next: ClientShellSnapshot) {
+        epDbg("handle snapshot rev=\(next.revision)")
+        if next.bootId.isEmpty
+            || snapshot.map({ $0.bootId != next.bootId || next.revision < $0.revision })
+                == true {
+            fail(EndpointSessionError.protocolViolation("snapshot identity").description)
+            return
+        }
+        let revisionChanged = snapshot.map { $0.revision != next.revision } ?? true
+        snapshot = next
+        emitSnapshot(next)
+        if revisionChanged,
+           let current = surface, current.projectionRevision == next.revision {
+            emitSurface(current)
+        }
     }
 
-    private func publishMatchingSurfaces() {
-        guard let snapshot else { return }
-        let matching = futureSurfaces.filter {
-            $0.bootId == snapshot.bootId && $0.projectionRevision == snapshot.revision
-        }
-        futureSurfaces.removeAll { frame in
-            frame.bootId != snapshot.bootId || frame.projectionRevision < snapshot.revision
-        }
-        if let newest = matching.last {
-            surface = newest
-            emitSurface(newest)
-        }
-    }
 
     private var failedConnection = false
 

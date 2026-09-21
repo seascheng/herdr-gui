@@ -144,6 +144,36 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         surface = newSurface
         needsDisplay = true
         scheduleResize()
+        if ProcessInfo.processInfo.environment["HERDR_DUMP_CELLS"] == "1" {
+            dumpCells()
+        }
+    }
+
+    /// Self-capture of the painted canvas (same-process, no TCC): the
+    /// HERDR_DUMP_CELLS smoke harness reads the PNG back. Retries until
+    /// the view has been laid out.
+    private var dumpAttempts = 0
+    private func dumpCells() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            guard self.bounds.width > 10, self.surface != nil else {
+                self.dumpAttempts += 1
+                if self.dumpAttempts < 20 { self.dumpCells() }
+                return
+            }
+            let image = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(self.bounds.width),
+                pixelsHigh: Int(self.bounds.height), bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: image)
+            self.draw(.infinite)
+            NSGraphicsContext.restoreGraphicsState()
+            if let data = image.representation(using: .png, properties: [:]) {
+                try? data.write(to: URL(fileURLWithPath: "/tmp/herdr-cells.png"))
+            }
+        }
     }
 
     var focusedPaneId: String? {

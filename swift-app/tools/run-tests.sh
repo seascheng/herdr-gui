@@ -11,6 +11,7 @@ TEST_SOURCES=(
     Sources/Infra/Bincode.swift
     Sources/Infra/BincodeReader.swift
     Sources/Herdr/Endpoint/EndpointWire.swift
+    Sources/Herdr/Endpoint/EndpointSnapshotJSON.swift
     Sources/Herdr/Endpoint/EndpointHandshake.swift
     Sources/Herdr/Endpoint/EndpointSession.swift
     Sources/Herdr/Endpoint/EndpointClient.swift

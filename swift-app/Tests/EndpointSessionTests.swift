@@ -81,11 +81,17 @@ enum EndpointSessionTests {
                 kind: EndpointConstants.welcomeKind, data: json).encoded()
         }
 
+        /// The daemon's real snapshot channel: JSON inside EndpointControl.
+        /// Minimal valid snapshot (all required keys, empty collections).
         static func snapshot(rev: UInt64, boot: String = "boot") -> [UInt8] {
-            var s = EndpointWireTests.makeSnapshot()
-            s.bootId = boot
-            s.revision = rev
-            return EndpointServerMessage.clientShellSnapshot(s).encoded()
+            let json = """
+            {"boot_id":"\(boot)","revision":\(rev),"update_install_command":"",\
+            "latest_release_notes_available":false,"integration_updates_available":false,\
+            "worktree_directory":"/wt","tab_bar_right":[],"tab_bar_right_separator":" | ",\
+            "agent_order":[],"workspaces":[],"tabs":[],"panes":[],"agents":[],"commands":[]}
+            """
+            return EndpointServerMessage.endpointControl(
+                kind: endpointSnapshotKind, data: json).encoded()
         }
 
         static func surface(rev: UInt64, surf: UInt64 = 1,
@@ -224,15 +230,18 @@ enum EndpointSessionTests {
             expectEq(recorder.surfaces.count, 1, "surface count")
             expectEq(recorder.surfaces.first?.proj ?? 0, 1, "surface projection")
         }
-        let ok2 = TestRegistry.add("session: surface before snapshot is held") {
+        let ok2 = TestRegistry.add("session: future surface held for its snapshot") {
             let daemon = MockDaemon()
             daemon.start()
             defer { daemon.stop() }
             daemon.handler = { fd, _ in
                 _ = MockDaemon.readFrame(fd: fd)
                 MockDaemon.write(fd: fd, bytes: MockDaemon.welcome())
-                MockDaemon.write(fd: fd, bytes: MockDaemon.surface(rev: 5))
-                MockDaemon.write(fd: fd, bytes: MockDaemon.snapshot(rev: 5))
+                MockDaemon.write(fd: fd, bytes: MockDaemon.snapshot(rev: 1))
+                // Surface for the NEXT projection: stored, not emitted.
+                MockDaemon.write(fd: fd, bytes: MockDaemon.surface(rev: 2, surf: 1))
+                // Matching snapshot lands → stored surface re-emits.
+                MockDaemon.write(fd: fd, bytes: MockDaemon.snapshot(rev: 2))
             }
             let session = EndpointSession(socketPath: daemon.path)
             let recorder = Recorder()
@@ -240,9 +249,9 @@ enum EndpointSessionTests {
             session.start()
             defer { session.stop() }
             expect(recorder.wait(3), "delivery timeout")
-            expectEq(recorder.snapshots, [5], "snapshot")
-            expectEq(recorder.surfaces.map(\.proj), [5],
-                     "held surface published after matching snapshot")
+            expectEq(recorder.snapshots, [1, 2], "snapshots in order")
+            expectEq(recorder.surfaces.map(\.proj), [2],
+                     "held surface published only after matching snapshot")
         }
         let ok3 = TestRegistry.add("session: patches advance the baseline") {
             let daemon = MockDaemon()

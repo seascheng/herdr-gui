@@ -52,6 +52,30 @@ enum EndpointModelTests {
             expectEq(HerdrModel.statusString(.done), "done", "done")
             expectEq(HerdrModel.statusString(.unknown), "unknown", "unknown")
         }
-        expect(ok1 && ok2 && ok3, "registration")
+        let ok4 = TestRegistry.add("model: fixture snapshot JSON decodes") {
+            let data = try loadFixture("endpoint-snapshot-v1.json")
+            let snapshot = try JSONDecoder().decode(
+                ClientShellSnapshot.self, from: data)
+            expectEq(snapshot.bootId, "boot-v1", "fixture boot")
+            expectEq(snapshot.revision, 7, "fixture revision")
+            expectEq(snapshot.workspaces.count, 1, "fixture workspaces")
+            let ws = snapshot.workspaces[0]
+            expectEq(ws.branch ?? "", "main", "fixture branch")
+            expectEq(ws.gitAheadBehind?.1, 2, "fixture behind")
+            expectEq(ws.tokens.first?.1, "opus", "fixture tokens")
+            expectEq(ws.agentStatus, AgentStatus.unknown,
+                     "unknown status string maps to .unknown")
+            expectEq(snapshot.agents[0].agentStatus, AgentStatus.blocked,
+                     "fixture agent status")
+            expectEq(snapshot.agents[0].stateLabels.first?.0, "blocked",
+                     "fixture state labels")
+            expectEq(snapshot.commands[0].action, ClientShellCommandAction.shell,
+                     "fixture command action")
+            expectEq(snapshot.focusedPaneId, "w1:p1", "fixture focused pane")
+            // Projection through the sidebar adapter works on fixture data.
+            let state = HerdrModel.sidebarState(snapshot)
+            expectEq(state.agents.first?.status, "blocked", "fixture → sidebar status")
+        }
+        expect(ok1 && ok2 && ok3 && ok4, "registration")
     }
 }
