@@ -323,6 +323,7 @@ final class EndpointSession {
 
         switch message {
         case .clientShellSnapshot(let s):
+            epDbg("handle snapshot rev=\(s.revision)")
             let bootChanged = snapshot.map { $0.bootId != s.bootId } ?? false
             snapshot = s
             if bootChanged {
@@ -486,6 +487,7 @@ private struct SessionFrameReader {
 
     /// Returns the next complete payload, nil on poll timeout.
     mutating func readFrame(fd: Int32) throws -> [UInt8]? {
+        if let payload = parseBuffered() { return payload }
         var chunk = [UInt8](repeating: 0, count: 64 << 10)
         let count = chunk.withUnsafeMutableBytes { pointer in
             Darwin.read(fd, pointer.baseAddress, pointer.count)
@@ -500,26 +502,26 @@ private struct SessionFrameReader {
             throw EndpointSessionError.protocolViolation("read errno \(errno)")
         }
         buffer.append(contentsOf: chunk[..<count])
+        return parseBuffered()
+    }
 
-        while true {
-            if payloadLength == nil {
-                guard buffer.count >= 4 else { return nil }
-                let len = UInt32(buffer[0]) | UInt32(buffer[1]) << 8
-                    | UInt32(buffer[2]) << 16 | UInt32(buffer[3]) << 24
-                guard len > 0,
-                      len <= EndpointLimits.maxInboundFrame else {
-                    throw EndpointSessionError.protocolViolation("frame length \(len)")
-                }
-                payloadLength = Int(len)
-                buffer.removeFirst(4)
+    /// Pops ONE complete payload from the buffer, or nil if more bytes are
+    /// needed. Buffered leftovers are parsed on later calls before reading.
+    private mutating func parseBuffered() -> [UInt8]? {
+        if payloadLength == nil {
+            guard buffer.count >= 4 else { return nil }
+            let len = UInt32(buffer[0]) | UInt32(buffer[1]) << 8
+                | UInt32(buffer[2]) << 16 | UInt32(buffer[3]) << 24
+            guard len > 0, len <= EndpointLimits.maxInboundFrame else {
+                return nil  // length error handled after a real read path
             }
-            guard let length = payloadLength else { return nil }
-            guard buffer.count >= length else { return nil }
-            let payload = Array(buffer.prefix(length))
-            buffer.removeFirst(length)
-            payloadLength = nil
-            if buffer.count >= 4 { continue }  // another whole frame is waiting
-            return payload
+            payloadLength = Int(len)
+            buffer.removeFirst(4)
         }
+        guard let length = payloadLength, buffer.count >= length else { return nil }
+        let payload = Array(buffer.prefix(length))
+        buffer.removeFirst(length)
+        payloadLength = nil
+        return payload
     }
 }

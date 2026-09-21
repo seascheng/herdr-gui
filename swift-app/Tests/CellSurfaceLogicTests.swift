@@ -1,0 +1,79 @@
+import Foundation
+
+/// Pure layout logic of the cell canvas: pane hit-testing, popup centering,
+/// and cursor shapes (DECSCUSR classes from herdr-gpui terminal_painter.rs).
+enum CellSurfaceLogicTests {
+    static func register() {
+        let ok1 = TestRegistry.add("surface: pane hit-test uses inner rects") {
+            let panes = [
+                PaneSurfacePane(paneId: "left", contentRevision: 1,
+                                rect: SurfaceRect(x: 0, y: 0, width: 40, height: 24),
+                                innerRect: SurfaceRect(x: 1, y: 1, width: 38, height: 22),
+                                scrollbarRect: nil, scroll: nil, focused: true,
+                                mouseReporting: false, sgrPixelMouse: false,
+                                alternateScreenActive: false,
+                                pixelWidth: 380, pixelHeight: 440),
+                PaneSurfacePane(paneId: "right", contentRevision: 1,
+                                rect: SurfaceRect(x: 40, y: 0, width: 40, height: 24),
+                                innerRect: SurfaceRect(x: 41, y: 1, width: 38, height: 22),
+                                scrollbarRect: nil, scroll: nil, focused: false,
+                                mouseReporting: false, sgrPixelMouse: false,
+                                alternateScreenActive: false,
+                                pixelWidth: 380, pixelHeight: 440),
+            ]
+            let cw = 10.0, ch = 20.0
+            // Inside left pane's inner rect.
+            expectEq(CellSurfaceLogic.paneId(atX: 15, atY: 40, cellWidth: cw,
+                                             cellHeight: ch, panes: panes),
+                     "left", "left pane")
+            // Inside right pane.
+            expectEq(CellSurfaceLogic.paneId(atX: 500, atY: 40, cellWidth: cw,
+                                             cellHeight: ch, panes: panes),
+                     "right", "right pane")
+            // Border column (x=400 → col 40 = right pane's outer border) misses.
+            expect(CellSurfaceLogic.paneId(atX: 400, atY: 40, cellWidth: cw,
+                                           cellHeight: ch, panes: panes) == nil,
+                   "border misses")
+            // Below inner rect bottom (row 23) misses.
+            expect(CellSurfaceLogic.paneId(atX: 15, atY: 465, cellWidth: cw,
+                                           cellHeight: ch, panes: panes) == nil,
+                   "bottom border misses")
+        }
+        let ok2 = TestRegistry.add("surface: popup centers and floors") {
+            let origin = CellSurfaceLogic.popupOrigin(mainCols: 80, mainRows: 24,
+                                                      popupCols: 20, popupRows: 10,
+                                                      cellWidth: 10, cellHeight: 20)
+            expectEq(origin.x, 300.0, "x centered")
+            expectEq(origin.y, 140.0, "y centered")
+            // Popup larger than main: saturates to 0.
+            let big = CellSurfaceLogic.popupOrigin(mainCols: 10, mainRows: 5,
+                                                   popupCols: 20, popupRows: 10,
+                                                   cellWidth: 10, cellHeight: 20)
+            expectEq(big.x, 0.0, "x clamped")
+            expectEq(big.y, 0.0, "y clamped")
+        }
+        let ok3 = TestRegistry.add("surface: cursor shapes per DECSCUSR") {
+            // Default (0..2) and blink block variants → full block.
+            func rect(_ shape: UInt8) -> (Double, Double, Double, Double) {
+                let r = CellSurfaceLogic.cursorRect(x: 3, y: 4, shape: shape,
+                                                    cellWidth: 10, cellHeight: 20)
+                return (r.x, r.y, r.w, r.h)
+            }
+            expectEq(rect(0).0, 30.0, "block x")
+            expectEq(rect(0).2, 10.0, "block w")
+            expectEq(rect(4).1, 98.0, "underline y")
+            expectEq(rect(4).3, 2.0, "underline h")
+            expectEq(rect(6).2, 2.0, "bar w")
+            expectEq(rect(6).3, 20.0, "bar h")
+        }
+        let ok4 = TestRegistry.add("surface: cell coordinate math") {
+            let cell = CellSurfaceLogic.cellAt(x: 155, y: 41, cellWidth: 10, cellHeight: 20)
+            expectEq(cell?.col ?? -1, 15, "col")
+            expectEq(cell?.row ?? -1, 2, "row")
+            // Negative coordinates clamp out of bounds.
+            expect(CellSurfaceLogic.cellAt(x: -1, y: 10, cellWidth: 10,
+                                           cellHeight: 20) == nil, "negative x")
+        }
+        expect(ok1 && ok2 && ok3 && ok4, "registration")
+    }
+}

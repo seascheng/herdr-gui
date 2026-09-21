@@ -55,6 +55,7 @@ enum TestRunner {
     static func main() {
         // One register call per test file; keep alphabetized as files land.
         CellInputMapperTests.register()
+        CellSurfaceLogicTests.register()
         CellThemeTests.register()
         EndpointHandshakeTests.register()
         EndpointModelTests.register()

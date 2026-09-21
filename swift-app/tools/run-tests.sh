@@ -19,8 +19,10 @@ TEST_SOURCES=(
     Sources/Infra/UnixSocket.swift
     Sources/Terminal/CellCanvas/CellTheme.swift
     Sources/Terminal/CellCanvas/CellInputMapper.swift
+    Sources/Terminal/CellCanvas/CellSurfaceView.swift
 
     Tests/TestMain.swift
+    Tests/CellSurfaceLogicTests.swift
     Tests/CellThemeTests.swift
     Tests/CellInputMapperTests.swift
     Tests/EndpointModelTests.swift
