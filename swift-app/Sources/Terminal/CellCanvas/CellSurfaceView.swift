@@ -741,6 +741,9 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         // key: Enter confirms, Esc cancels, arrows navigate candidates.
         // Leaking Enter to the terminal here confirms nothing upstream.
         if markedText != nil {
+            if Self.imeDebug, event.keyCode == 36 {
+                epDbg("enter during composition -> inputContext")
+            }
             interpretKeyEvents([event])
             return
         }
@@ -768,10 +771,22 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     // MARK: NSTextInputClient (IME → TextCommit)
 
+    private static let imeDebug =
+        ProcessInfo.processInfo.environment["HERDR_ENDPOINT_DEBUG"] == "1"
+
+    private static func imeString(_ any: Any) -> String? {
+        if let s = any as? String { return s }
+        if let a = any as? NSAttributedString { return a.string }
+        return nil
+    }
+
     func insertText(_ string: Any, replacementRange: NSRange) {
+        if Self.imeDebug {
+            epDbg("insertText \(String(describing: string).prefix(40))")
+        }
         markedText = nil
         resetCursorBlink()
-        guard let text = string as? String, !text.isEmpty else { return }
+        guard let text = Self.imeString(string), !text.isEmpty else { return }
         send(.textCommit(text))
     }
 
@@ -814,7 +829,10 @@ final class CellSurfaceView: NSView, NSTextInputClient {
 
     func setMarkedText(_ string: Any, selectedRange: NSRange,
                        replacementRange: NSRange) {
-        markedText = string as? String
+        markedText = Self.imeString(string)
+        if Self.imeDebug {
+            epDbg("setMarkedText [\(markedText ?? "nil")]")
+        }
         needsDisplay = true
     }
 
@@ -836,13 +854,18 @@ final class CellSurfaceView: NSView, NSTextInputClient {
                    actualRange: NSRangePointer?) -> NSRect {
         guard let surface else { return .zero }
         let frame = surface.popup?.frame ?? surface.frame
-        guard let cursor = frame.cursor else { return .zero }
-        let rect = CellSurfaceLogic.cursorRect(x: cursor.x, y: cursor.y, shape: 0,
+        let rect: (x: Double, y: Double, w: Double, h: Double)
+        if let cursor = frame.cursor {
+            rect = CellSurfaceLogic.cursorRect(x: cursor.x, y: cursor.y, shape: 0,
                                                cellWidth: cellWidth,
                                                cellHeight: cellHeight)
+        } else {
+            rect = (0, 0, cellWidth, cellHeight)
+        }
         var viewRect = NSRect(x: rect.x, y: rect.y, width: rect.w, height: rect.h)
         viewRect = convert(viewRect, to: nil)
-        return window?.convertToScreen(viewRect) ?? .zero
+        return window?.convertToScreen(viewRect)
+            ?? NSRect(x: 0, y: 0, width: cellWidth, height: cellHeight)
     }
     func characterIndex(for point: NSPoint) -> Int { 0 }
 

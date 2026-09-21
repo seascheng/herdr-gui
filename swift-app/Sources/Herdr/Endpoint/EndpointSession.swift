@@ -35,7 +35,7 @@ enum EndpointSessionError: Error, CustomStringConvertible {
     }
 }
 
-private func epDbg(_ text: String) {
+func epDbg(_ text: String) {
     if ProcessInfo.processInfo.environment["HERDR_ENDPOINT_DEBUG"] == "1" {
         FileHandle.standardError.write(Data(("endpoint: " + text + "\n").utf8))
     }
