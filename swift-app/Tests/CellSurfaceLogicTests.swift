@@ -136,6 +136,27 @@ enum CellSurfaceLogicTests {
             expectEq(clipped[0].from, 1, "clip from x0")
             expectEq(clipped[0].to, 38, "clip to x1")
         }
-        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6, "registration")
+        let ok7 = TestRegistry.add("surface: span snaps to content") {
+            let width = 20
+            func cell(_ s: String) -> CellData {
+                CellData(symbol: s, fg: 0, bg: 0, modifier: 0, skip: false,
+                         hyperlink: nil)
+            }
+            // Row "     hello     " in cols 0..19.
+            var rowCells = (0..<width).map { _ in cell(" ") }
+            for (i, ch) in "hello".enumerated() { rowCells[5 + i] = cell(String(ch)) }
+            var cells: [CellData] = []
+            for _ in 0..<3 { cells.append(contentsOf: (0..<width).map { _ in cell(" ") }) }
+            cells.append(contentsOf: rowCells)
+            let bounds = CellSurfaceLogic.spanContentBounds(
+                cells: cells, width: width, row: 3, from: 2, to: 15)
+            expectEq(bounds?.from ?? -1, 5, "snap from")
+            expectEq(bounds?.to ?? -1, 9, "snap to")
+            // All-blank span → nil (no highlight).
+            let blank = CellSurfaceLogic.spanContentBounds(
+                cells: cells, width: width, row: 0, from: 0, to: 19)
+            expect(blank == nil, "blank span is nil")
+        }
+        expect(ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7, "registration")
     }
 }

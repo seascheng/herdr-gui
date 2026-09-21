@@ -90,6 +90,28 @@ enum CellSurfaceLogic {
         let y = Double(mainRows - popupRows) * cellHeight / 2
         return (max(x, 0), max(y, 0))
     }
+    /// First/last cell with visible content inside a span; nil when the
+    /// whole span is blank. Selection highlight and copy snap to this, so
+    /// dragging over empty space selects nothing visible.
+    static func spanContentBounds(cells: [CellData], width: Int,
+                                  row: Int, from: Int, to: Int)
+        -> (from: Int, to: Int)? {
+        guard width > 0, row >= 0, to >= from else { return nil }
+        let lo = max(from, 0)
+        let hi = min(to, width - 1)
+        guard hi >= lo, row * width + hi < cells.count else { return nil }
+        var first: Int? = nil
+        var last: Int? = nil
+        for col in lo...hi {
+            let cell = cells[row * width + col]
+            if !cell.skip, !cell.symbol.isEmpty, cell.symbol != " " {
+                if first == nil { first = col }
+                last = col
+            }
+        }
+        guard let first, let last else { return nil }
+        return (first, last)
+    }
 
     /// DECSCUSR cursor shapes: 3|4 bottom underline bar, 5|6 left bar,
     /// everything else a full block.
@@ -112,10 +134,8 @@ enum CellSurfaceLogic {
 // MARK: - CoreText cell canvas
 //
 // Painting model: one CTLine per ROW (not per glyph). Glyph advances are
-// pinned to the cell grid with per-glyph kern, so column alignment, wide
-// cells (skip continuation), and cursor math stay exact while draw calls
-// drop from cells-per-frame to rows-per-frame (~120× fewer). Rows whose
-// cells did not change reuse the cached CTLine and are not marked dirty.
+// pinned to the cell grid with per-glyph kern; rows whose cells did not
+// change reuse the cached CTLine and are not marked dirty.
 
 final class CellSurfaceView: NSView, NSTextInputClient {
     var theme = CellTheme.defaults
@@ -326,22 +346,24 @@ final class CellSurfaceView: NSView, NSTextInputClient {
                     context: context, dirty: dirtyRect == .infinite)
         }
 
-        // Selection overlay (streaming spans).
+        // Selection overlay (streaming spans, snapped to actual content).
         if let anchor = selectionAnchor, let head = selectionHead,
            let bounds = selectionBounds {
             let spans = CellSurfaceLogic.rowSpans(anchor: anchor, head: head,
                                                   x0: bounds.x0, x1: bounds.x1)
             for span in spans {
+                guard let content = CellSurfaceLogic.spanContentBounds(
+                        cells: frame.cells, width: width,
+                        row: span.row, from: span.from, to: span.to)
+                else { continue }  // blank rows highlight nothing
                 let rect = CGRect(
-                    x: Double(span.from) * cellWidth,
+                    x: Double(content.from) * cellWidth,
                     y: Double(span.row) * cellHeight,
-                    width: Double(span.to - span.from + 1) * cellWidth,
+                    width: Double(content.to - content.from + 1) * cellWidth,
                     height: cellHeight)
                 fill(context, rect, color: 0x999999, alpha: 0.35)
             }
         }
-
-        // Cursor (50% alpha over content).
         if let cursor = frame.cursor, cursor.visible,
            cursor.x < frame.width, cursor.y < frame.height {
             let rect = CellSurfaceLogic.cursorRect(
@@ -546,14 +568,21 @@ final class CellSurfaceView: NSView, NSTextInputClient {
         let width = Int(frame.width)
         var lines: [String] = []
         for span in spans where span.row < Int(frame.height) {
+            // Snap to content: leading/trailing blanks are layout, not text.
+            guard let content = CellSurfaceLogic.spanContentBounds(
+                    cells: frame.cells, width: width,
+                    row: span.row, from: span.from, to: span.to)
+            else {
+                lines.append("")  // interior blank rows keep line structure
+                continue
+            }
             var line = ""
-            for col in span.from...min(span.to, width - 1)
+            for col in content.from...min(content.to, width - 1)
             where span.row * width + col < frame.cells.count {
                 let cell = frame.cells[span.row * width + col]
                 if !cell.skip { line += cell.symbol }
             }
-            // Trailing whitespace is layout, not content.
-            lines.append(line.trimmingCharacters(in: CharacterSet(charactersIn: " ")))
+            lines.append(line)
         }
         while lines.last == "" { lines.removeLast() }
         let pasteboard = NSPasteboard.general
@@ -649,30 +678,31 @@ final class CellSurfaceView: NSView, NSTextInputClient {
             surface.panes.first { $0.paneId == id }?.innerRect
         }
         if let inner {
-            selectionBounds = (Int(inner.x), Int(inner.x) + Int(inner.width) - 1,
-                               Int(inner.y), Int(inner.y) + Int(inner.height) - 1)
+            let x0 = Int(inner.x), x1 = Int(inner.x) + Int(inner.width) - 1
+            let y0 = Int(inner.y), y1 = Int(inner.y) + Int(inner.height) - 1
+            selectionBounds = (x0, x1, y0, y1)
+            // Anchor/head are ABSOLUTE surface cell coordinates, clamped
+            // into the pane's inner rect.
             let cell = CellSurfaceLogic.clampedCell(
                 x: Double(point.x), y: Double(point.y),
                 cellWidth: cellWidth, cellHeight: cellHeight,
-                cols: Int(inner.x) + Int(inner.width),
-                rows: Int(inner.y) + Int(inner.height))
-            let local = (col: cell.col - Int(inner.x), row: cell.row - Int(inner.y))
+                cols: x1 + 1, rows: y1 + 1)
+            let anchor = (col: min(max(cell.col, x0), x1),
+                          row: min(max(cell.row, y0), y1))
             if event.clickCount == 2 {
                 let popupFrame = surface.popup?.frame
                 let cells = popupFrame?.cells ?? surface.frame.cells
                 let width = popupFrame.map { Int($0.width) } ?? Int(surface.frame.width)
-                let absCol = Int(inner.x) + local.col
-                let absRow = Int(inner.y) + local.row
                 let start = CellSurfaceLogic.wordStart(cells: cells, width: width,
-                                                       col: absCol, row: absRow)
+                                                       col: anchor.col, row: anchor.row)
                 let end = CellSurfaceLogic.wordEnd(cells: cells, width: width,
-                                                   col: absCol, row: absRow)
-                selectionAnchor = (start.col - Int(inner.x), local.row)
-                selectionHead = (end.col - Int(inner.x), local.row)
+                                                   col: anchor.col, row: anchor.row)
+                selectionAnchor = (start.col, anchor.row)
+                selectionHead = (end.col, anchor.row)
                 isDraggingSelection = false
             } else {
-                selectionAnchor = local
-                selectionHead = local
+                selectionAnchor = anchor
+                selectionHead = anchor
                 isDraggingSelection = true
             }
         } else {
@@ -699,12 +729,9 @@ final class CellSurfaceView: NSView, NSTextInputClient {
                 x: Double(point.x), y: Double(point.y),
                 cellWidth: cellWidth, cellHeight: cellHeight,
                 cols: bounds.x1 + 1, rows: bounds.y1 + 1)
-            selectionHead = (min(max(cell.col - 0, 0), bounds.x1),
-                             min(max(cell.row, 0), bounds.y1))
+            selectionHead = (min(max(cell.col, bounds.x0), bounds.x1),
+                             min(max(cell.row, bounds.y0), bounds.y1))
             needsDisplay = true
-        }
-        if let paneId = mouseDownPane, paneReportsMouse(paneId) {
-            sendMouse(event, point: point, isDown: true, isDrag: true)
         }
     }
 
